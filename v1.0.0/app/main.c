@@ -1324,7 +1324,7 @@ static void handle_client(int fd) {
         cJSON_AddNumberToObject(cfg,"duration_ms", g_app.duration_ms);
         char *cs=cJSON_PrintUnformatted(cfg); cJSON_Delete(cfg);
         GError *err=NULL;
-        ax_parameter_set(g_app.axp,"Config",cs,&err);
+        ax_parameter_set(g_app.axp,"Config",cs,TRUE,&err);
         if(err)g_error_free(err);
         free(cs);
         g_app.last_poll=0; /* force refresh */
@@ -1338,7 +1338,7 @@ static void handle_client(int fd) {
         display_show(
             "\xF0\x9F\x8F\x86 FIFA World Cup 2026  "
             "\xE2\x9A\xBD USA \xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
-            " 1\xE2\x80\x930 ENG \xF0\x9F\x87\xAC\xF0\x9F\x87\xA7"
+            " 1\xE2\x80\x93" "0 ENG \xF0\x9F\x87\xAC\xF0\x9F\x87\xA7"
             " | 67' | Group A");
         send_json(fd,200,"{\"message\":\"Test sent\"}"); return;
     }
