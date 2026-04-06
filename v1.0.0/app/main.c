@@ -414,8 +414,8 @@ static int af_parse_fixtures(const char *json,
 
         /* group label */
         cJSON *grpobj = cJSON_GetObjectItem(lg,"group");
-        if (cJSON_IsString(grpobj)) strncpy(m->group, grpobj->valuestring, 11);
-        else strncpy(m->group,"Group Stage",11);
+        if (cJSON_IsString(grpobj)) { strncpy(m->group, grpobj->valuestring, 11); m->group[11]='\0'; }
+        else { memcpy(m->group,"Group Stage",11); m->group[11]='\0'; }
 
         /* teams — try tla field first, fall back to name fuzzy-match */
         cJSON *home = cJSON_GetObjectItem(tms,"home");
