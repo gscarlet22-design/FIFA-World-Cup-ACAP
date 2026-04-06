@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FIFA World Cup 2026</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+
+    <div class="header">
+        <div class="logo">&#127942;</div>
+        <h1>FIFA World Cup 2026</h1>
+        <p class="subtitle">gscarlet22 design &mdash; v1.0.0</p>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" data-tab="live">Live</button>
+        <button class="tab" data-tab="standings">Standings</button>
+        <button class="tab" data-tab="scorers">Golden Boot</button>
+        <button class="tab" data-tab="config">Config</button>
+        <button class="tab" data-tab="diag">&#128300; Diag</button>
+    </div>
+
+    <!-- ── LIVE Tab ────────────────────────────────────────── -->
+    <div id="live" class="panel active">
+        <div class="panel-toolbar">
+            <span id="src-badge" class="src-badge">--</span>
+            <span id="demo-badge" class="demo-badge hidden">DEMO</span>
+            <button id="btn-refresh" class="btn btn-secondary btn-sm">&#8635; Refresh</button>
+        </div>
+
+        <div class="section-label">Live Now</div>
+        <div id="matches-live"><div class="empty-msg">No live matches</div></div>
+
+        <div class="section-label" style="margin-top:16px;">Upcoming</div>
+        <div id="matches-upcoming"><div class="empty-msg">--</div></div>
+
+        <div class="section-label" style="margin-top:16px;">Recent Results</div>
+        <div id="matches-finished"><div class="empty-msg">--</div></div>
+
+        <div class="status-row">
+            <span class="status-label">App</span>
+            <span id="st-enabled" class="badge">--</span>
+            <span class="status-label" style="margin-left:10px;">Last poll</span>
+            <span id="st-poll" class="poll-time">--</span>
+        </div>
+    </div>
+
+    <!-- ── STANDINGS Tab ──────────────────────────────────── -->
+    <div id="standings" class="panel">
+        <p class="hint" style="margin-bottom:12px;">Tracked groups are highlighted. Select countries in Config to filter.</p>
+        <div id="standings-grid"></div>
+    </div>
+
+    <!-- ── GOLDEN BOOT Tab ────────────────────────────────── -->
+    <div id="scorers" class="panel">
+        <h3 class="section-title">&#127942; Golden Boot Race</h3>
+        <p class="hint" style="margin-bottom:12px;">Top goal scorers of the tournament.</p>
+        <div id="scorers-list"></div>
+    </div>
+
+    <!-- ── CONFIG Tab ─────────────────────────────────────── -->
+    <div id="config" class="panel">
+
+        <h3 class="section-title">Country Selection</h3>
+        <p class="hint">Tracked countries get top priority in the ticker. Leave all unchecked to show all matches equally.</p>
+        <div class="sel-toolbar">
+            <button id="btn-sel-all"  class="btn btn-secondary btn-sm">Select All</button>
+            <button id="btn-sel-none" class="btn btn-secondary btn-sm">Clear All</button>
+        </div>
+        <div id="team-grid"></div>
+
+        <hr class="divider">
+
+        <h3 class="section-title">Display Mode</h3>
+        <div class="form-group toggle-row">
+            <label>&#127914; Demo Mode <span class="hint-inline">(reads mock files — no live API calls)</span></label>
+            <label class="toggle"><input type="checkbox" id="demo-mode"><span class="slider"></span></label>
+        </div>
+        <div class="form-group toggle-row">
+            <label>Ticker Enabled</label>
+            <label class="toggle"><input type="checkbox" id="enabled" checked><span class="slider"></span></label>
+        </div>
+        <div class="form-group toggle-row">
+            <label>Show on Display</label>
+            <label class="toggle"><input type="checkbox" id="disp-enabled" checked><span class="slider"></span></label>
+        </div>
+
+        <hr class="divider">
+
+        <h3 class="section-title">API Keys</h3>
+        <p class="hint">
+            <strong>Primary:</strong> api-football.com (free tier: 100 req/day).<br>
+            <strong>Fallback:</strong> football-data.org (free tier: 10 req/min).<br>
+            Leave both blank to use Demo Mode only. Keys are never echoed back by the API.
+        </p>
+        <div class="form-group">
+            <label for="af-key">api-football Key <span class="hint-inline">(X-RapidAPI-Key)</span></label>
+            <input type="password" id="af-key" placeholder="Paste key here&hellip;" autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label for="fd-key">football-data.org Key <span class="hint-inline">(X-Auth-Token)</span></label>
+            <input type="password" id="fd-key" placeholder="Paste key here&hellip;" autocomplete="off">
+        </div>
+
+        <hr class="divider">
+
+        <h3 class="section-title">Device Credentials</h3>
+        <p class="hint">Used to push text to the C1720 / C1710 display.</p>
+        <div class="form-group">
+            <label for="device-user">Username</label>
+            <input type="text" id="device-user" value="root" autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label for="device-pass">Password</label>
+            <input type="password" id="device-pass" placeholder="Device password" autocomplete="off">
+        </div>
+
+        <hr class="divider">
+
+        <h3 class="section-title">Polling</h3>
+        <p class="hint">3 minutes is the hard minimum enforced by the app to protect free API tier limits.</p>
+        <div class="form-group">
+            <label for="poll-interval">Poll Interval</label>
+            <select id="poll-interval">
+                <option value="180">3 min (minimum)</option>
+                <option value="300">5 min</option>
+                <option value="600">10 min</option>
+                <option value="900" selected>15 min (recommended for free tier)</option>
+            </select>
+        </div>
+
+        <hr class="divider">
+
+        <h3 class="section-title">Display Appearance</h3>
+        <div class="form-row">
+            <div class="form-group half">
+                <label for="text-color">Text Color</label>
+                <input type="color" id="text-color" value="#FFFFFF">
+            </div>
+            <div class="form-group half">
+                <label for="bg-color">Background</label>
+                <input type="color" id="bg-color" value="#003F7F">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group third">
+                <label for="text-size">Text Size</label>
+                <select id="text-size">
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                    <option value="large" selected>Large</option>
+                </select>
+            </div>
+            <div class="form-group third">
+                <label for="scroll-speed">Speed: <span id="scroll-speed-val">3</span></label>
+                <input type="range" id="scroll-speed" min="1" max="5" value="3">
+            </div>
+            <div class="form-group third">
+                <label for="duration-sec">Duration (s)</label>
+                <input type="number" id="duration-sec" min="5" max="60" value="15">
+            </div>
+        </div>
+        <button id="btn-test-display" class="btn btn-secondary btn-full">&#128250; Test Display Message</button>
+
+        <hr class="divider">
+
+        <button id="btn-save" class="btn btn-primary">Save Settings</button>
+        <div id="save-msg" class="save-msg"></div>
+    </div>
+
+    <!-- ── DIAGNOSTICS Tab ────────────────────────────────── -->
+    <div id="diag" class="panel">
+        <h3 class="section-title">&#128300; Diagnostics</h3>
+        <p class="hint">Use these checks to isolate problems at each layer of the stack.</p>
+
+        <!-- App connectivity -->
+        <div class="diag-section">
+            <div class="diag-section-title">1 — App & API Server</div>
+            <p class="hint">Verifies the C backend is running and responding on port 2016 via the VAPIX reverse proxy.</p>
+            <button class="btn btn-secondary btn-sm" id="diag-ping">Ping /status</button>
+            <pre id="diag-ping-out" class="diag-out"></pre>
+        </div>
+
+        <!-- Mock files -->
+        <div class="diag-section">
+            <div class="diag-section-title">2 — Demo / Mock Data</div>
+            <p class="hint">Forces a data reload while Demo Mode is on. Checks that mock JSON files are accessible on the device at <code>/usr/local/packages/fifa_wc/mock/</code>.</p>
+            <button class="btn btn-secondary btn-sm" id="diag-mock">Load Mock Data</button>
+            <pre id="diag-mock-out" class="diag-out"></pre>
+        </div>
+
+        <!-- Force refresh -->
+        <div class="diag-section">
+            <div class="diag-section-title">3 — Force API Refresh</div>
+            <p class="hint">Resets the rate-limit timer and triggers an immediate fetch from the live API (or mock if Demo Mode is on). Check the Live tab after ~5 seconds.</p>
+            <button class="btn btn-secondary btn-sm" id="diag-refresh">Force Refresh Now</button>
+            <pre id="diag-refresh-out" class="diag-out"></pre>
+        </div>
+
+        <!-- Display test -->
+        <div class="diag-section">
+            <div class="diag-section-title">4 — VAPIX Display</div>
+            <p class="hint">Sends a test message directly to the C1720/C1710 display. If nothing appears, check device credentials in Config.</p>
+            <button class="btn btn-secondary btn-sm" id="diag-display">Send Test Message</button>
+            <pre id="diag-display-out" class="diag-out"></pre>
+        </div>
+
+        <!-- Raw status dump -->
+        <div class="diag-section">
+            <div class="diag-section-title">5 — Full Status Dump</div>
+            <p class="hint">Raw JSON from <code>/status</code> — useful for verifying parsed match data.</p>
+            <button class="btn btn-secondary btn-sm" id="diag-dump">Dump /status JSON</button>
+            <pre id="diag-dump-out" class="diag-out"></pre>
+        </div>
+
+        <!-- Troubleshooting guide -->
+        <div class="diag-section">
+            <div class="diag-section-title">Quick Reference</div>
+            <table class="diag-table">
+                <tr><th>Symptom</th><th>Likely Cause</th><th>Fix</th></tr>
+                <tr><td>Ping fails</td><td>App crashed or not started</td><td>Check ACAP app status in Axis device UI; check <code>syslog</code></td></tr>
+                <tr><td>Mock load fails</td><td>Mock files missing from package</td><td>Rebuild .eap — ensure <code>app/mock/</code> folder was included</td></tr>
+                <tr><td>No data after refresh</td><td>API keys missing or rate-limited</td><td>Enable Demo Mode, or check free tier quota on api-football dashboard</td></tr>
+                <tr><td>Display stays blank</td><td>Wrong device credentials</td><td>Re-enter username/password in Config and Save</td></tr>
+                <tr><td>Display shows boxes/squares</td><td>Emoji not supported by firmware</td><td>Check C1720 firmware version; flag emojis require firmware &ge; 11.x</td></tr>
+                <tr><td>Build error: missing cJSON</td><td>cJSON download failed in Docker</td><td>Run <code>docker build --no-cache</code>; check internet connectivity</td></tr>
+                <tr><td>Build error: linker -laxparameter</td><td>Wrong SDK version</td><td>Change <code>VERSION=12.9.0</code> in Dockerfile to match your SDK</td></tr>
+            </table>
+        </div>
+    </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

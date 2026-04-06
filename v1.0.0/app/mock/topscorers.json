@@ -1,0 +1,64 @@
+{
+  "get": "players/topscorers",
+  "parameters": { "league": "1", "season": "2026" },
+  "errors": [],
+  "results": 7,
+  "response": [
+    {
+      "player": { "id": 278, "name": "Kylian Mbappé", "nationality": "France" },
+      "statistics": [{
+        "team": { "id": 2, "name": "France", "tla": "FRA" },
+        "goals": { "total": 4, "assists": 1, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    },
+    {
+      "player": { "id": 184, "name": "Harry Kane", "nationality": "England" },
+      "statistics": [{
+        "team": { "id": 10, "name": "England", "tla": "ENG" },
+        "goals": { "total": 3, "assists": 0, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    },
+    {
+      "player": { "id": 1, "name": "Lionel Messi", "nationality": "Argentina" },
+      "statistics": [{
+        "team": { "id": 26, "name": "Argentina", "tla": "ARG" },
+        "goals": { "total": 3, "assists": 2, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    },
+    {
+      "player": { "id": 9030, "name": "Cristiano Ronaldo", "nationality": "Portugal" },
+      "statistics": [{
+        "team": { "id": 27, "name": "Portugal", "tla": "POR" },
+        "goals": { "total": 3, "assists": 0, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    },
+    {
+      "player": { "id": 9021, "name": "Vinicius Jr.", "nationality": "Brazil" },
+      "statistics": [{
+        "team": { "id": 6, "name": "Brazil", "tla": "BRA" },
+        "goals": { "total": 2, "assists": 1, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    },
+    {
+      "player": { "id": 9001, "name": "Christian Pulisic", "nationality": "United States" },
+      "statistics": [{
+        "team": { "id": 2300, "name": "United States", "tla": "USA" },
+        "goals": { "total": 2, "assists": 1, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    },
+    {
+      "player": { "id": 9020, "name": "Lamine Yamal", "nationality": "Spain" },
+      "statistics": [{
+        "team": { "id": 9, "name": "Spain", "tla": "ESP" },
+        "goals": { "total": 2, "assists": 2, "saves": null },
+        "games": { "appearences": 2, "minutes": 180 }
+      }]
+    }
+  ]
+}

@@ -1,0 +1,181 @@
+{
+  "get": "fixtures",
+  "parameters": { "league": "1", "season": "2026" },
+  "errors": [],
+  "results": 5,
+  "paging": { "current": 1, "total": 1 },
+  "response": [
+    {
+      "fixture": {
+        "id": 1001,
+        "date": "2026-06-14T15:00:00+00:00",
+        "status": { "long": "First Half", "short": "1H", "elapsed": 67, "extra": null }
+      },
+      "league": {
+        "id": 1, "name": "World Cup", "season": 2026,
+        "round": "Group Stage - 1", "group": "Group A"
+      },
+      "teams": {
+        "home": { "id": 2300, "name": "United States", "tla": "USA", "winner": null },
+        "away": { "id": 10,   "name": "England",        "tla": "ENG", "winner": null }
+      },
+      "goals": { "home": 1, "away": 0 },
+      "score": {
+        "halftime": { "home": 0, "away": 0 },
+        "fulltime": { "home": null, "away": null }
+      },
+      "events": [
+        {
+          "time": { "elapsed": 58, "extra": null },
+          "team": { "id": 2300, "name": "United States" },
+          "player": { "id": 9001, "name": "C. Pulisic" },
+          "assist": { "id": null, "name": null },
+          "type": "Goal",
+          "detail": "Normal Goal",
+          "comments": null
+        }
+      ]
+    },
+    {
+      "fixture": {
+        "id": 1002,
+        "date": "2026-06-14T18:00:00+00:00",
+        "status": { "long": "Second Half", "short": "2H", "elapsed": 72, "extra": null }
+      },
+      "league": {
+        "id": 1, "name": "World Cup", "season": 2026,
+        "round": "Group Stage - 1", "group": "Group B"
+      },
+      "teams": {
+        "home": { "id": 26,  "name": "Argentina", "tla": "ARG", "winner": null },
+        "away": { "id": 25,  "name": "Germany",   "tla": "GER", "winner": null }
+      },
+      "goals": { "home": 2, "away": 1 },
+      "score": {
+        "halftime": { "home": 1, "away": 1 },
+        "fulltime": { "home": null, "away": null }
+      },
+      "events": [
+        {
+          "time": { "elapsed": 34, "extra": null },
+          "team": { "id": 26, "name": "Argentina" },
+          "player": { "id": 1, "name": "L. Messi" },
+          "assist": { "id": 9002, "name": "Di Maria" },
+          "type": "Goal",
+          "detail": "Normal Goal",
+          "comments": null
+        },
+        {
+          "time": { "elapsed": 45, "extra": 2 },
+          "team": { "id": 25, "name": "Germany" },
+          "player": { "id": 9010, "name": "K. Havertz" },
+          "assist": { "id": null, "name": null },
+          "type": "Goal",
+          "detail": "Normal Goal",
+          "comments": null
+        },
+        {
+          "time": { "elapsed": 68, "extra": null },
+          "team": { "id": 26, "name": "Argentina" },
+          "player": { "id": 9003, "name": "J. Alvarez" },
+          "assist": { "id": 1, "name": "L. Messi" },
+          "type": "Goal",
+          "detail": "Normal Goal",
+          "comments": null
+        }
+      ]
+    },
+    {
+      "fixture": {
+        "id": 1003,
+        "date": "2026-06-14T12:00:00+00:00",
+        "status": { "long": "Half Time", "short": "HT", "elapsed": 45, "extra": null }
+      },
+      "league": {
+        "id": 1, "name": "World Cup", "season": 2026,
+        "round": "Group Stage - 1", "group": "Group C"
+      },
+      "teams": {
+        "home": { "id": 9,  "name": "Spain",  "tla": "ESP", "winner": null },
+        "away": { "id": 6,  "name": "Brazil", "tla": "BRA", "winner": null }
+      },
+      "goals": { "home": 1, "away": 1 },
+      "score": {
+        "halftime": { "home": 1, "away": 1 },
+        "fulltime": { "home": null, "away": null }
+      },
+      "events": [
+        {
+          "time": { "elapsed": 22, "extra": null },
+          "team": { "id": 9, "name": "Spain" },
+          "player": { "id": 9020, "name": "Y. Yamal" },
+          "assist": { "id": null, "name": null },
+          "type": "Goal",
+          "detail": "Normal Goal",
+          "comments": null
+        },
+        {
+          "time": { "elapsed": 39, "extra": null },
+          "team": { "id": 6, "name": "Brazil" },
+          "player": { "id": 9021, "name": "Vinicius Jr." },
+          "assist": { "id": null, "name": null },
+          "type": "Goal",
+          "detail": "Normal Goal",
+          "comments": null
+        }
+      ]
+    },
+    {
+      "fixture": {
+        "id": 1004,
+        "date": "2026-06-14T21:00:00+00:00",
+        "status": { "long": "Not Started", "short": "NS", "elapsed": null, "extra": null }
+      },
+      "league": {
+        "id": 1, "name": "World Cup", "season": 2026,
+        "round": "Group Stage - 1", "group": "Group A"
+      },
+      "teams": {
+        "home": { "id": 2,  "name": "France", "tla": "FRA", "winner": null },
+        "away": { "id": 24, "name": "Poland", "tla": "POL", "winner": null }
+      },
+      "goals": { "home": null, "away": null },
+      "score": {
+        "halftime": { "home": null, "away": null },
+        "fulltime": { "home": null, "away": null }
+      },
+      "events": []
+    },
+    {
+      "fixture": {
+        "id": 1005,
+        "date": "2026-06-13T18:00:00+00:00",
+        "status": { "long": "Match Finished", "short": "FT", "elapsed": 90, "extra": null }
+      },
+      "league": {
+        "id": 1, "name": "World Cup", "season": 2026,
+        "round": "Group Stage - 1", "group": "Group D"
+      },
+      "teams": {
+        "home": { "id": 27, "name": "Portugal",    "tla": "POR", "winner": true  },
+        "away": { "id": 34, "name": "Uruguay",     "tla": "URU", "winner": false }
+      },
+      "goals": { "home": 3, "away": 1 },
+      "score": {
+        "halftime": { "home": 1, "away": 0 },
+        "fulltime": { "home": 3, "away": 1 }
+      },
+      "events": [
+        {
+          "time": { "elapsed": 12, "extra": null },
+          "team": { "id": 27, "name": "Portugal" },
+          "player": { "id": 9030, "name": "C. Ronaldo" },
+          "assist": { "id": null, "name": null },
+          "type": "Goal",
+          "detail": "Penalty",
+          "comments": null
+        }
+      ]
+    }
+  ]
+}

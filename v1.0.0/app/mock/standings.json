@@ -1,0 +1,153 @@
+{
+  "get": "standings",
+  "parameters": { "league": "1", "season": "2026" },
+  "errors": [],
+  "results": 1,
+  "response": [
+    {
+      "league": {
+        "id": 1,
+        "name": "World Cup",
+        "season": 2026,
+        "standings": [
+          [
+            {
+              "rank": 1, "group": "Group A",
+              "team": { "id": 2300, "name": "United States", "tla": "USA" },
+              "points": 6, "goalsDiff": 4,
+              "form": "WW", "status": "same", "description": "Advance to Round of 32",
+              "all": { "played": 2, "win": 2, "draw": 0, "lose": 0,
+                       "goals": { "for": 5, "against": 1 } }
+            },
+            {
+              "rank": 2, "group": "Group A",
+              "team": { "id": 10, "name": "England", "tla": "ENG" },
+              "points": 3, "goalsDiff": 1,
+              "form": "WL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 1, "draw": 0, "lose": 1,
+                       "goals": { "for": 2, "against": 1 } }
+            },
+            {
+              "rank": 3, "group": "Group A",
+              "team": { "id": 2, "name": "France", "tla": "FRA" },
+              "points": 1, "goalsDiff": -1,
+              "form": "DL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 1, "lose": 1,
+                       "goals": { "for": 1, "against": 2 } }
+            },
+            {
+              "rank": 4, "group": "Group A",
+              "team": { "id": 24, "name": "Poland", "tla": "POL" },
+              "points": 1, "goalsDiff": -4,
+              "form": "DL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 1, "lose": 1,
+                       "goals": { "for": 1, "against": 5 } }
+            }
+          ],
+          [
+            {
+              "rank": 1, "group": "Group B",
+              "team": { "id": 26, "name": "Argentina", "tla": "ARG" },
+              "points": 4, "goalsDiff": 2,
+              "form": "WD", "status": "same", "description": "Advance to Round of 32",
+              "all": { "played": 2, "win": 1, "draw": 1, "lose": 0,
+                       "goals": { "for": 4, "against": 2 } }
+            },
+            {
+              "rank": 2, "group": "Group B",
+              "team": { "id": 25, "name": "Germany", "tla": "GER" },
+              "points": 4, "goalsDiff": 1,
+              "form": "DW", "status": "same", "description": null,
+              "all": { "played": 2, "win": 1, "draw": 1, "lose": 0,
+                       "goals": { "for": 3, "against": 2 } }
+            },
+            {
+              "rank": 3, "group": "Group B",
+              "team": { "id": 54, "name": "Nigeria", "tla": "NGA" },
+              "points": 1, "goalsDiff": -1,
+              "form": "DL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 1, "lose": 1,
+                       "goals": { "for": 1, "against": 2 } }
+            },
+            {
+              "rank": 4, "group": "Group B",
+              "team": { "id": 1503, "name": "Tunisia", "tla": "TUN" },
+              "points": 0, "goalsDiff": -2,
+              "form": "LL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 0, "lose": 2,
+                       "goals": { "for": 1, "against": 3 } }
+            }
+          ],
+          [
+            {
+              "rank": 1, "group": "Group C",
+              "team": { "id": 9, "name": "Spain", "tla": "ESP" },
+              "points": 4, "goalsDiff": 2,
+              "form": "WD", "status": "same", "description": "Advance to Round of 32",
+              "all": { "played": 2, "win": 1, "draw": 1, "lose": 0,
+                       "goals": { "for": 3, "against": 1 } }
+            },
+            {
+              "rank": 2, "group": "Group C",
+              "team": { "id": 6, "name": "Brazil", "tla": "BRA" },
+              "points": 4, "goalsDiff": 2,
+              "form": "WD", "status": "same", "description": null,
+              "all": { "played": 2, "win": 1, "draw": 1, "lose": 0,
+                       "goals": { "for": 3, "against": 1 } }
+            },
+            {
+              "rank": 3, "group": "Group C",
+              "team": { "id": 1572, "name": "Morocco", "tla": "MAR" },
+              "points": 1, "goalsDiff": -1,
+              "form": "DL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 1, "lose": 1,
+                       "goals": { "for": 1, "against": 2 } }
+            },
+            {
+              "rank": 4, "group": "Group C",
+              "team": { "id": 711, "name": "Australia", "tla": "AUS" },
+              "points": 0, "goalsDiff": -3,
+              "form": "LL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 0, "lose": 2,
+                       "goals": { "for": 0, "against": 3 } }
+            }
+          ],
+          [
+            {
+              "rank": 1, "group": "Group D",
+              "team": { "id": 27, "name": "Portugal", "tla": "POR" },
+              "points": 6, "goalsDiff": 5,
+              "form": "WW", "status": "same", "description": "Advance to Round of 32",
+              "all": { "played": 2, "win": 2, "draw": 0, "lose": 0,
+                       "goals": { "for": 6, "against": 1 } }
+            },
+            {
+              "rank": 2, "group": "Group D",
+              "team": { "id": 5, "name": "Netherlands", "tla": "NED" },
+              "points": 3, "goalsDiff": 2,
+              "form": "WL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 1, "draw": 0, "lose": 1,
+                       "goals": { "for": 3, "against": 1 } }
+            },
+            {
+              "rank": 3, "group": "Group D",
+              "team": { "id": 15, "name": "Japan", "tla": "JPN" },
+              "points": 3, "goalsDiff": 0,
+              "form": "LW", "status": "same", "description": null,
+              "all": { "played": 2, "win": 1, "draw": 0, "lose": 1,
+                       "goals": { "for": 2, "against": 2 } }
+            },
+            {
+              "rank": 4, "group": "Group D",
+              "team": { "id": 34, "name": "Uruguay", "tla": "URU" },
+              "points": 0, "goalsDiff": -7,
+              "form": "LL", "status": "same", "description": null,
+              "all": { "played": 2, "win": 0, "draw": 0, "lose": 2,
+                       "goals": { "for": 1, "against": 8 } }
+            }
+          ]
+        ]
+      }
+    }
+  ]
+}
