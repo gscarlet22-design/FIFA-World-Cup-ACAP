@@ -1,0 +1,35 @@
+{
+    "schemaVersion": "1.9.0",
+    "acapPackageConf": {
+        "setup": {
+            "appName": "fifa_wc",
+            "friendlyName": "FIFA World Cup 2026",
+            "vendor": "gscarlet22 design",
+            "embeddedSdkVersion": "3.0",
+            "runMode": "respawn",
+            "version": "1.0.0",
+            "user": {
+                "username": "sdk",
+                "group": "sdk"
+            },
+            "architecture": "aarch64"
+        },
+        "configuration": {
+            "settingPage": "index.html",
+            "reverseProxy": [
+                {
+                    "apiPath": "api",
+                    "target": "http://127.0.0.1:2016",
+                    "access": "admin"
+                }
+            ],
+            "paramConfig": [
+                {
+                    "name": "Config",
+                    "default": "",
+                    "type": "String"
+                }
+            ]
+        }
+    }
+}
