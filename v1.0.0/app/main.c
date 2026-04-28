@@ -34,7 +34,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.1"
+#define APP_VER         "1.0.2"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -1369,11 +1369,12 @@ static void handle_client(int fd) {
             " | 67' | Group A";
         char disp_resp[512]="";
         long http_code=display_show(tmsg,disp_resp,sizeof(disp_resp));
-        char out[768];
-        snprintf(out,sizeof(out),
-            "{\"message\":\"ok\",\"display_http\":%ld,\"display_resp\":\"%s\"}",
-            http_code,disp_resp);
-        send_json(fd,200,out); return;
+        cJSON *root=cJSON_CreateObject();
+        cJSON_AddStringToObject(root,"message","ok");
+        cJSON_AddNumberToObject(root,"display_http",(double)http_code);
+        cJSON_AddStringToObject(root,"display_resp",disp_resp);
+        char *js=cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        send_json(fd,200,js); free(js); return;
     }
 
     /* ── POST /refresh ── */
