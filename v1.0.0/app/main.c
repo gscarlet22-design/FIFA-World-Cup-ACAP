@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.0  gscarlet22 design
+ * v1.0.2  gscarlet22 design
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
