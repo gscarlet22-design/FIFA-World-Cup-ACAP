@@ -433,12 +433,16 @@
             api('/test_display', { method: 'POST' })
                 .then(function (r) { return r.json(); })
                 .then(function (d) {
-                    done('✓ ' + (d.message||'Sent') + '\n\n'
-                        + 'If nothing appears on the C1720 display:\n'
+                    var http = d.display_http;
+                    var ok   = (http >= 200 && http < 300);
+                    var hint = ok ? '' :
+                        '\n\nIf nothing appears on the C1720 display:\n'
                         + '  • Check device username/password in Config\n'
                         + '  • Confirm "Show on Display" is ON\n'
                         + '  • Verify the VAPIX display endpoint is reachable\n'
-                        + '    (device must be a C1720 / C1710)', true);
+                        + '    (device must be a C1720 / C1710)';
+                    done((ok ? '✓' : '✗') + ' display API HTTP ' + http + '\n'
+                        + (d.display_resp || '') + hint, ok);
                 })
                 .catch(function (e) { done('✗ ' + e, false); });
         });

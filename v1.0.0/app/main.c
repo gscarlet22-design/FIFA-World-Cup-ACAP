@@ -901,7 +901,9 @@ static void rebuild_queue_locked(void) {
 }
 
 /* ── VAPIX display ────────────────────────────────────────────── */
-static int display_show(const char *msg) {
+/* Returns the HTTP status code (200 = success), -1 on curl error.
+ * If resp_out/resp_sz are non-NULL the raw API response is written there. */
+static long display_show(const char *msg, char *resp_out, size_t resp_sz) {
     if (!g_app.disp_enabled) return 0;
     CURL *curl=curl_easy_init(); if(!curl) return -1;
     char up[160];
@@ -931,18 +933,27 @@ static int display_show(const char *msg) {
     struct curl_slist *hdrs=curl_slist_append(NULL,"Content-Type: application/json");
     curl_easy_setopt(curl,CURLOPT_URL,DISP_API);
     curl_easy_setopt(curl,CURLOPT_POST,1L);
-    curl_easy_setopt(curl,CURLOPT_POSTFIELDS,js);
+    curl_easy_setopt(curl,CURLOPT_COPYPOSTFIELDS,js);
     curl_easy_setopt(curl,CURLOPT_USERPWD,up);
     curl_easy_setopt(curl,CURLOPT_HTTPAUTH,CURLAUTH_BASIC);
     curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,0L);
+    curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,0L);
     curl_easy_setopt(curl,CURLOPT_HTTPHEADER,hdrs);
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,hbuf_cb);
     curl_easy_setopt(curl,CURLOPT_WRITEDATA,&resp);
     curl_easy_setopt(curl,CURLOPT_TIMEOUT,5L);
     CURLcode rc=curl_easy_perform(curl);
+    long http_code=-1;
+    if(rc==CURLE_OK)
+        curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&http_code);
+    LOG("display http=%ld curl=%d resp=%s",
+        http_code,(int)rc,resp.data?resp.data:"(empty)");
+    if(resp_out&&resp_sz>0)
+        snprintf(resp_out,resp_sz,"http=%ld resp=%s",
+                 http_code,resp.data?resp.data:"(empty)");
     free(js); free(resp.data);
     curl_slist_free_all(hdrs); curl_easy_cleanup(curl);
-    return rc==CURLE_OK?0:-1;
+    return (rc==CURLE_OK)?http_code:-1;
 }
 
 /* ── Display thread ───────────────────────────────────────────── */
@@ -964,7 +975,7 @@ static void *display_thread(void *arg) {
         pthread_mutex_unlock(&g_app.lock);
 
         if (go) {
-            display_show(msg);
+            display_show(msg, NULL, 0);
             int w=0;
             while (g_app.running && w<dur) {
                 int s=dur-w<500?dur-w:500;
@@ -1092,8 +1103,13 @@ static void handle_client(int fd) {
     sscanf(req,"%7s %255s",method,path);
     char *q=strchr(path,'?'); if(q)*q='\0';
 
+    /* ROUTE: substring match so the VAPIX reverse-proxy path prefix
+     * (e.g. "/api/status") resolves correctly regardless of what the
+     * proxy strips.  Identical pattern to the working MLB app. */
+    #define ROUTE(r) (strstr(path,(r))!=NULL)
+
     /* ── GET /status ── */
-    if (!strcmp(method,"GET") && !strcmp(path,"/status")) {
+    if (!strcmp(method,"GET") && ROUTE("/status")) {
         pthread_mutex_lock(&g_app.lock);
         cJSON *root=cJSON_CreateObject();
         cJSON_AddBoolToObject(root,"enabled",g_app.enabled);
@@ -1147,7 +1163,7 @@ static void handle_client(int fd) {
     }
 
     /* ── GET /teams ── */
-    if (!strcmp(method,"GET") && !strcmp(path,"/teams")) {
+    if (!strcmp(method,"GET") && ROUTE("/teams")) {
         cJSON *root=cJSON_CreateObject();
         cJSON *arr=cJSON_CreateArray();
         for (int i=0;i<NUM_TEAMS;i++) {
@@ -1169,7 +1185,7 @@ static void handle_client(int fd) {
     }
 
     /* ── GET /standings ── */
-    if (!strcmp(method,"GET") && !strcmp(path,"/standings")) {
+    if (!strcmp(method,"GET") && ROUTE("/standings")) {
         pthread_mutex_lock(&g_app.lock);
         cJSON *root=cJSON_CreateObject();
         cJSON *garr=cJSON_CreateArray();
@@ -1210,7 +1226,7 @@ static void handle_client(int fd) {
     }
 
     /* ── GET /scorers ── */
-    if (!strcmp(method,"GET") && !strcmp(path,"/scorers")) {
+    if (!strcmp(method,"GET") && ROUTE("/scorers")) {
         pthread_mutex_lock(&g_app.lock);
         cJSON *root=cJSON_CreateObject();
         cJSON *arr=cJSON_CreateArray();
@@ -1231,7 +1247,7 @@ static void handle_client(int fd) {
     }
 
     /* ── GET /config ── */
-    if (!strcmp(method,"GET") && !strcmp(path,"/config")) {
+    if (!strcmp(method,"GET") && ROUTE("/config")) {
         pthread_mutex_lock(&g_app.lock);
         cJSON *root=cJSON_CreateObject();
         cJSON *sarr=cJSON_CreateArray();
@@ -1256,7 +1272,7 @@ static void handle_client(int fd) {
     }
 
     /* ── POST /config ── */
-    if (!strcmp(method,"POST") && !strcmp(path,"/config")) {
+    if (!strcmp(method,"POST") && ROUTE("/config")) {
         char body[8192]; read_body(fd,req,body,sizeof(body));
         cJSON *j=cJSON_Parse(body);
         if(!j) { send_json(fd,400,"{\"message\":\"bad json\"}"); return; }
@@ -1323,32 +1339,50 @@ static void handle_client(int fd) {
         cJSON_AddNumberToObject(cfg,"scroll_speed",g_app.scroll_speed);
         cJSON_AddNumberToObject(cfg,"duration_ms", g_app.duration_ms);
         char *cs=cJSON_PrintUnformatted(cfg); cJSON_Delete(cfg);
-        GError *err=NULL;
-        ax_parameter_set(g_app.axp,"Config",cs,TRUE,&err);
-        if(err)g_error_free(err);
+        int save_ok=0;
+        if(g_app.axp) {
+            GError *err=NULL;
+            save_ok=ax_parameter_set(g_app.axp,"Config",cs,TRUE,&err);
+            if(err){
+                LOG("ax_parameter_set error: %s",err->message);
+                g_error_free(err);
+            } else {
+                LOG("config saved (%zu bytes)",strlen(cs));
+            }
+        } else {
+            LOG("axp is NULL — config not persisted");
+        }
         free(cs);
         g_app.last_poll=0; /* force refresh */
         pthread_mutex_unlock(&g_app.lock);
         cJSON_Delete(j);
-        send_json(fd,200,"{\"message\":\"Saved\"}"); return;
+        send_json(fd,200,save_ok?"{\"message\":\"Saved\"}":"{\"message\":\"Saved (runtime only — persist failed, check syslog)\"}");
+        return;
     }
 
     /* ── POST /test_display ── */
-    if (!strcmp(method,"POST") && !strcmp(path,"/test_display")) {
-        display_show(
+    if (!strcmp(method,"POST") && ROUTE("/test_display")) {
+        const char *tmsg =
             "\xF0\x9F\x8F\x86 FIFA World Cup 2026  "
             "\xE2\x9A\xBD USA \xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
             " 1\xE2\x80\x93" "0 ENG \xF0\x9F\x87\xAC\xF0\x9F\x87\xA7"
-            " | 67' | Group A");
-        send_json(fd,200,"{\"message\":\"Test sent\"}"); return;
+            " | 67' | Group A";
+        char disp_resp[512]="";
+        long http_code=display_show(tmsg,disp_resp,sizeof(disp_resp));
+        char out[768];
+        snprintf(out,sizeof(out),
+            "{\"message\":\"ok\",\"display_http\":%ld,\"display_resp\":\"%s\"}",
+            http_code,disp_resp);
+        send_json(fd,200,out); return;
     }
 
     /* ── POST /refresh ── */
-    if (!strcmp(method,"POST") && !strcmp(path,"/refresh")) {
+    if (!strcmp(method,"POST") && ROUTE("/refresh")) {
         pthread_mutex_lock(&g_app.lock); g_app.last_poll=0; pthread_mutex_unlock(&g_app.lock);
         send_json(fd,200,"{\"message\":\"Refresh queued\"}"); return;
     }
 
+    LOG("404 method=%s path=%s",method,path);
     send_json(fd,404,"{\"message\":\"Not found\"}");
 }
 
