@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.7  gscarlet22 design  (Sprint 5: knockout bracket tab)
+ * v1.0.8  gscarlet22 design  (Sprint 6: per-team audio & display overrides)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.7"
+#define APP_VER         "1.0.8"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -206,6 +206,14 @@ typedef struct {
     int  goals;
 } NScorer;
 
+/* Per-team goal-event overrides (clip ID and strobe flash count).
+ * clip_id == 0 means "use global"; flashes == 0 means "use global". */
+typedef struct {
+    char code[4];
+    int  clip_id;
+    int  flashes;
+} TeamOverride;
+
 /* ── Application state ────────────────────────────────────────── */
 typedef struct {
     /* Persisted config */
@@ -232,6 +240,8 @@ typedef struct {
     int  webhook_enabled;   /* 0 = disabled                              */
     int  strobe_enabled;    /* flash team colors on goal (0=off)         */
     int  strobe_flashes;    /* number of alternating flashes (2–10)      */
+    TeamOverride team_overrides[MAX_SEL]; /* per-team clip/flash overrides */
+    int  n_overrides;
     char text_color[16];
     char bg_color[16];
     char text_size[16];
@@ -824,6 +834,23 @@ static int fd_parse_scorers(const char *json,
 }
 
 /* ── Helpers ──────────────────────────────────────────────────── */
+
+/* Per-team override lookups — return override if > 0, else global default. */
+static int get_team_clip(const char *code) {
+    for (int i = 0; i < g_app.n_overrides; i++)
+        if (strncasecmp(g_app.team_overrides[i].code, code, 3) == 0 &&
+            g_app.team_overrides[i].clip_id > 0)
+            return g_app.team_overrides[i].clip_id;
+    return g_app.goal_clip_id;
+}
+
+static int get_team_flashes(const char *code) {
+    for (int i = 0; i < g_app.n_overrides; i++)
+        if (strncasecmp(g_app.team_overrides[i].code, code, 3) == 0 &&
+            g_app.team_overrides[i].flashes > 0)
+            return g_app.team_overrides[i].flashes;
+    return g_app.strobe_flashes;
+}
 
 static int is_selected(const char *code) {
     if (g_app.nsel == 0) return 1; /* track all if nothing selected */
@@ -1577,10 +1604,8 @@ static void do_fetch(void) {
     /* ── Goal detection for audio alerts + webhook ── */
     int goal_scored  = 0;
     int goal_side    = 0; /* 0=home scored, 1=away scored */
-    int goal_clip    = g_app.goal_clip_id;
     int wh_enabled   = g_app.webhook_enabled;
     int str_enabled  = g_app.strobe_enabled;
-    int str_flashes  = g_app.strobe_flashes;
     NMatch goal_match; memset(&goal_match, 0, sizeof(goal_match));
     for (int i = 0; i < nm; i++) {
         /* Only tracked teams trigger events */
@@ -1624,9 +1649,15 @@ static void do_fetch(void) {
     rebuild_queue_locked();
     pthread_mutex_unlock(&g_app.lock);
 
-    /* Fire audio / strobe / webhook outside the lock */
+    /* Fire audio / strobe / webhook outside the lock.
+     * Resolve per-team overrides now (after unlock — helpers read g_app
+     * without the lock, which is safe for int reads). */
     if (goal_scored) {
-        LOG("GOAL detected — side=%d clip=%d strobe=%d", goal_side, goal_clip, str_enabled);
+        const char *sc = (goal_side == 0) ? goal_match.home_code : goal_match.away_code;
+        int goal_clip   = get_team_clip(sc);
+        int str_flashes = get_team_flashes(sc);
+        LOG("GOAL detected — side=%d team=%s clip=%d flashes=%d strobe=%d",
+            goal_side, sc, goal_clip, str_flashes, str_enabled);
         if (g_app.audio_enabled && g_app.audio_volume > 0 && goal_clip > 0)
             play_clip(goal_clip);
         if (str_enabled) strobe_goal(&goal_match, goal_side, str_flashes);
@@ -1956,6 +1987,15 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(root,"webhook_url",g_app.webhook_url[0]?"***":"");
         cJSON_AddBoolToObject(root,"strobe_enabled",g_app.strobe_enabled);
         cJSON_AddNumberToObject(root,"strobe_flashes",(double)g_app.strobe_flashes);
+        cJSON *ovarr = cJSON_CreateArray();
+        for (int i = 0; i < g_app.n_overrides; i++) {
+            cJSON *ov = cJSON_CreateObject();
+            cJSON_AddStringToObject(ov, "code",    g_app.team_overrides[i].code);
+            cJSON_AddNumberToObject(ov, "clip_id", (double)g_app.team_overrides[i].clip_id);
+            cJSON_AddNumberToObject(ov, "flashes", (double)g_app.team_overrides[i].flashes);
+            cJSON_AddItemToArray(ovarr, ov);
+        }
+        cJSON_AddItemToObject(root, "team_overrides", ovarr);
         cJSON_AddBoolToObject(root,"enabled",g_app.enabled);
         cJSON_AddBoolToObject(root,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(root,"demo_mode",g_app.demo_mode);
@@ -2021,6 +2061,26 @@ static void handle_client(int fd) {
         NUM_FIELD("strobe_flashes",    g_app.strobe_flashes);
         if (g_app.strobe_flashes < 2)  g_app.strobe_flashes = 2;
         if (g_app.strobe_flashes > 10) g_app.strobe_flashes = 10;
+        {   /* team_overrides array */
+            cJSON *ovs = cJSON_GetObjectItem(j, "team_overrides");
+            if (cJSON_IsArray(ovs)) {
+                g_app.n_overrides = 0;
+                int nov = cJSON_GetArraySize(ovs);
+                for (int i = 0; i < nov && g_app.n_overrides < MAX_SEL; i++) {
+                    cJSON *ov  = cJSON_GetArrayItem(ovs, i);
+                    cJSON *ovc = cJSON_GetObjectItem(ov, "code");
+                    cJSON *ovl = cJSON_GetObjectItem(ov, "clip_id");
+                    cJSON *ovf = cJSON_GetObjectItem(ov, "flashes");
+                    if (!cJSON_IsString(ovc)) continue;
+                    TeamOverride *t = &g_app.team_overrides[g_app.n_overrides++];
+                    strncpy(t->code, ovc->valuestring, 3); t->code[3] = '\0';
+                    t->clip_id = cJSON_IsNumber(ovl) ? (int)ovl->valuedouble : 0;
+                    t->flashes = cJSON_IsNumber(ovf) ? (int)ovf->valuedouble : 0;
+                    if (t->clip_id < 0 || t->clip_id > 9)  t->clip_id = 0;
+                    if (t->flashes != 0 && (t->flashes < 2 || t->flashes > 10)) t->flashes = 0;
+                }
+            }
+        }
         {   /* webhook_url: only update if provided and not "***" */
             cJSON *_f = cJSON_GetObjectItem(j, "webhook_url");
             if (cJSON_IsString(_f) && strcmp(_f->valuestring,"***")!=0 && _f->valuestring[0])
@@ -2061,6 +2121,15 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(cfg,"webhook_url",      g_app.webhook_url);
         cJSON_AddBoolToObject(cfg,"strobe_enabled",     g_app.strobe_enabled);
         cJSON_AddNumberToObject(cfg,"strobe_flashes",   (double)g_app.strobe_flashes);
+        cJSON *ovarr2 = cJSON_CreateArray();
+        for (int i = 0; i < g_app.n_overrides; i++) {
+            cJSON *ov = cJSON_CreateObject();
+            cJSON_AddStringToObject(ov, "code",    g_app.team_overrides[i].code);
+            cJSON_AddNumberToObject(ov, "clip_id", (double)g_app.team_overrides[i].clip_id);
+            cJSON_AddNumberToObject(ov, "flashes", (double)g_app.team_overrides[i].flashes);
+            cJSON_AddItemToArray(ovarr2, ov);
+        }
+        cJSON_AddItemToObject(cfg, "team_overrides", ovarr2);
         cJSON_AddBoolToObject(cfg,"enabled",        g_app.enabled);
         cJSON_AddBoolToObject(cfg,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(cfg,"demo_mode",      g_app.demo_mode);
@@ -2411,6 +2480,24 @@ static void load_config(void) {
     LS("webhook_url",        g_app.webhook_url,   256);
     LB("strobe_enabled",     g_app.strobe_enabled);
     LN("strobe_flashes",     g_app.strobe_flashes);
+    {
+        cJSON *ovs = cJSON_GetObjectItem(j, "team_overrides");
+        if (cJSON_IsArray(ovs)) {
+            g_app.n_overrides = 0;
+            int nov = cJSON_GetArraySize(ovs);
+            for (int i = 0; i < nov && g_app.n_overrides < MAX_SEL; i++) {
+                cJSON *ov  = cJSON_GetArrayItem(ovs, i);
+                cJSON *ovc = cJSON_GetObjectItem(ov, "code");
+                cJSON *ovl = cJSON_GetObjectItem(ov, "clip_id");
+                cJSON *ovf = cJSON_GetObjectItem(ov, "flashes");
+                if (!cJSON_IsString(ovc)) continue;
+                TeamOverride *t = &g_app.team_overrides[g_app.n_overrides++];
+                strncpy(t->code, ovc->valuestring, 3); t->code[3] = '\0';
+                t->clip_id = cJSON_IsNumber(ovl) ? (int)ovl->valuedouble : 0;
+                t->flashes = cJSON_IsNumber(ovf) ? (int)ovf->valuedouble : 0;
+            }
+        }
+    }
     LN("poll_interval_sec",  g_app.poll_sec);
     LN("live_poll_sec",      g_app.live_poll_sec);
     LN("prematch_poll_sec",  g_app.prematch_poll_sec);

@@ -322,11 +322,11 @@
 
     document.getElementById('btn-sel-all').addEventListener('click', function () {
         allTeams.forEach(function (t) { selectedCodes[t.code] = true; });
-        renderTeamGrid();
+        renderTeamGrid(); renderTeamOverrides();
     });
     document.getElementById('btn-sel-none').addEventListener('click', function () {
         selectedCodes = {};
-        renderTeamGrid();
+        renderTeamGrid(); renderTeamOverrides();
     });
 
     /* ── Config Tab — Load / Save ─────────────────────────── */
@@ -336,6 +336,31 @@
     document.getElementById('audio-volume').addEventListener('input', function () {
         document.getElementById('audio-volume-val').textContent = this.value;
     });
+
+    var teamOverrides = {}; /* code → { clip_id, flashes } */
+
+    function renderTeamOverrides() {
+        var el = document.getElementById('team-overrides-grid');
+        var codes = Object.keys(selectedCodes);
+        if (!codes.length) {
+            el.innerHTML = '<p class="hint">No teams selected — pick teams above first.</p>';
+            return;
+        }
+        el.innerHTML = '<table class="diag-table" style="width:100%">'
+            + '<thead><tr><th></th><th>Team</th><th>Clip ID <span class="hint-inline">(0=global)</span></th><th>Flashes <span class="hint-inline">(0=global)</span></th></tr></thead>'
+            + '<tbody>'
+            + codes.map(function (code) {
+                var t = allTeams.find(function (t) { return t.code === code; }) || {};
+                var ov = teamOverrides[code] || { clip_id: 0, flashes: 0 };
+                return '<tr>'
+                    + '<td>' + (t.flag || '') + '</td>'
+                    + '<td><strong>' + esc(code) + '</strong></td>'
+                    + '<td><input type="number" class="ov-clip" data-code="' + esc(code) + '" min="0" max="9" value="' + ov.clip_id + '" style="width:56px"></td>'
+                    + '<td><input type="number" class="ov-flash" data-code="' + esc(code) + '" min="0" max="10" value="' + ov.flashes + '" style="width:56px"></td>'
+                    + '</tr>';
+            }).join('')
+            + '</tbody></table>';
+    }
 
     function loadConfig() {
         api('/config').then(function (r) { return r.json(); }).then(function (d) {
@@ -369,6 +394,13 @@
             selectedCodes = {};
             (d.selected_teams || []).forEach(function (c) { selectedCodes[c] = true; });
             renderTeamGrid();
+
+            /* Per-team overrides */
+            teamOverrides = {};
+            (d.team_overrides || []).forEach(function (ov) {
+                teamOverrides[ov.code] = { clip_id: ov.clip_id || 0, flashes: ov.flashes || 0 };
+            });
+            renderTeamOverrides();
 
             /* api key hint */
             document.getElementById('af-key').placeholder =
@@ -410,6 +442,17 @@
             goal_clip_id:      parseInt(document.getElementById('goal-clip-id').value, 10),
             alert_clip_id:     parseInt(document.getElementById('alert-clip-id').value, 10),
         };
+        /* Collect per-team overrides from the rendered table */
+        var overridesArr = [];
+        document.querySelectorAll('#team-overrides-grid .ov-clip').forEach(function (inp) {
+            var code    = inp.dataset.code;
+            var clipId  = parseInt(inp.value, 10) || 0;
+            var flashEl = document.querySelector('#team-overrides-grid .ov-flash[data-code="' + code + '"]');
+            var flashes = flashEl ? (parseInt(flashEl.value, 10) || 0) : 0;
+            overridesArr.push({ code: code, clip_id: clipId, flashes: flashes });
+        });
+        payload.team_overrides = overridesArr;
+
         var afKey      = document.getElementById('af-key').value.trim();
         var fdKey      = document.getElementById('fd-key').value.trim();
         var pass       = document.getElementById('device-pass').value;
