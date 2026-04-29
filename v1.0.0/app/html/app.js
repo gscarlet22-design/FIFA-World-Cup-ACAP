@@ -60,6 +60,8 @@
         badge.textContent = data.enabled ? 'Enabled' : 'Disabled';
         badge.className = 'badge ' + (data.enabled ? 'on' : 'off');
         document.getElementById('st-poll').textContent = data.last_poll || '--';
+        var pm = document.getElementById('st-poll-mode');
+        if (pm) pm.textContent = (data.poll_mode || 'idle') + ' ' + (data.effective_poll_sec || '--') + 's';
 
         var sb = document.getElementById('src-badge');
         sb.textContent = data.data_source || '--';
@@ -283,6 +285,13 @@
             document.getElementById('scroll-speed').value   = String(d.scroll_speed || 3);
             document.getElementById('scroll-speed-val').textContent = String(d.scroll_speed || 3);
             document.getElementById('duration-sec').value  = String(Math.round((d.duration_ms||15000)/1000));
+            document.getElementById('live-poll-sec').value     = String(d.live_poll_sec    || 30);
+            document.getElementById('prematch-poll-sec').value = String(d.prematch_poll_sec || 90);
+            document.getElementById('idle-poll-sec').value     = String(d.idle_poll_sec     || 300);
+            document.getElementById('poll-interval').value     = String(d.poll_interval_sec || 0);
+            document.getElementById('webhook-enabled').checked = !!d.webhook_enabled;
+            document.getElementById('webhook-url').placeholder =
+                d.webhook_url === '***' ? '(configured — paste to update)' : 'https://\u2026';
             document.getElementById('audio-enabled').checked = (d.audio_enabled !== false);
             document.getElementById('audio-volume').value    = String(d.audio_volume != null ? d.audio_volume : 75);
             document.getElementById('audio-volume-val').textContent = String(d.audio_volume != null ? d.audio_volume : 75);
@@ -317,7 +326,11 @@
             display_enabled:   document.getElementById('disp-enabled').checked,
             demo_mode:         document.getElementById('demo-mode').checked,
             device_user:       document.getElementById('device-user').value,
-            poll_interval_sec: parseInt(document.getElementById('poll-interval').value, 10),
+            poll_interval_sec:  parseInt(document.getElementById('poll-interval').value, 10) || 0,
+            live_poll_sec:      parseInt(document.getElementById('live-poll-sec').value, 10),
+            prematch_poll_sec:  parseInt(document.getElementById('prematch-poll-sec').value, 10),
+            idle_poll_sec:      parseInt(document.getElementById('idle-poll-sec').value, 10),
+            webhook_enabled:    document.getElementById('webhook-enabled').checked,
             text_color:        document.getElementById('text-color').value,
             bg_color:          document.getElementById('bg-color').value,
             text_size:         document.getElementById('text-size').value,
@@ -328,12 +341,14 @@
             goal_clip_id:      parseInt(document.getElementById('goal-clip-id').value, 10),
             alert_clip_id:     parseInt(document.getElementById('alert-clip-id').value, 10),
         };
-        var afKey = document.getElementById('af-key').value.trim();
-        var fdKey = document.getElementById('fd-key').value.trim();
-        var pass  = document.getElementById('device-pass').value;
-        if (afKey) payload.af_key = afKey;
-        if (fdKey) payload.fd_key = fdKey;
-        if (pass)  payload.device_pass = pass;
+        var afKey      = document.getElementById('af-key').value.trim();
+        var fdKey      = document.getElementById('fd-key').value.trim();
+        var pass       = document.getElementById('device-pass').value;
+        var webhookUrl = document.getElementById('webhook-url').value.trim();
+        if (afKey)      payload.af_key      = afKey;
+        if (fdKey)      payload.fd_key      = fdKey;
+        if (pass)       payload.device_pass = pass;
+        if (webhookUrl) payload.webhook_url = webhookUrl;
 
         api('/config', {
             method:  'POST',
@@ -345,6 +360,7 @@
               document.getElementById('device-pass').value = '';
               document.getElementById('af-key').value = '';
               document.getElementById('fd-key').value = '';
+              document.getElementById('webhook-url').value = '';
               loadConfig();
           })
           .catch(function (e) { showMsg('Save failed: ' + e, false); });
@@ -355,6 +371,25 @@
             .then(function (r) { return r.json(); })
             .then(function (d) { showMsg(d.message || 'Sent'); })
             .catch(function () { showMsg('Display test failed', false); });
+    });
+
+    /* Webhook test */
+    document.getElementById('btn-test-webhook').addEventListener('click', function () {
+        var el = document.getElementById('webhook-msg');
+        el.textContent = 'Sending test payload\u2026'; el.className = 'save-msg';
+        api('/test_webhook', { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var ok = (d.http_code >= 200 && d.http_code < 300);
+                el.textContent = (ok ? '\u2713' : '\u2717') + ' HTTP ' + d.http_code +
+                    (d.response ? ' | ' + d.response : '') +
+                    (!ok ? '\n' + (d.curl_error || '') : '');
+                el.className = 'save-msg' + (ok ? '' : ' error');
+                setTimeout(function () { el.textContent = ''; el.className = 'save-msg'; }, 5000);
+            })
+            .catch(function (e) {
+                el.textContent = '\u2717 ' + e; el.className = 'save-msg error';
+            });
     });
 
     function showAudioMsg(txt, ok) {

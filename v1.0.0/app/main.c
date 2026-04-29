@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.3  gscarlet22 design  (Sprint 2: audio pipeline)
+ * v1.0.4  gscarlet22 design  (Sprint 1: adaptive poll + webhook)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.3"
+#define APP_VER         "1.0.4"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -214,7 +214,12 @@ typedef struct {
     char fd_key[64];            /* football-data.org API key             */
     char dev_user[64];
     char dev_pass[64];
-    int  poll_sec;
+    int  poll_sec;          /* manual cap: 0 = use adaptive only         */
+    int  live_poll_sec;     /* adaptive: tracked team live (1H/2H/ET/PEN)*/
+    int  prematch_poll_sec; /* adaptive: tracked team kicks off <20 min  */
+    int  idle_poll_sec;     /* adaptive: no tracked teams active         */
+    char poll_mode[12];     /* "live" / "prematch" / "idle"              */
+    int  effective_poll_sec;/* last computed effective interval          */
     int  enabled;
     int  disp_enabled;
     int  demo_mode;
@@ -222,6 +227,8 @@ typedef struct {
     int  audio_volume;      /* 0–100, applied as perceptual gain curve   */
     int  goal_clip_id;      /* mediaclip store ID for goal sound         */
     int  alert_clip_id;     /* mediaclip store ID for halftime/KO sound  */
+    char webhook_url[256];  /* outbound goal event push URL (empty=off)  */
+    int  webhook_enabled;   /* 0 = disabled                              */
     char text_color[16];
     char bg_color[16];
     char text_size[16];
@@ -931,6 +938,71 @@ static void rebuild_queue_locked(void) {
     pthread_mutex_unlock(&g_dlock);
 }
 
+/* ── Goal event webhook ──────────────────────────────────────────
+ * Called OUTSIDE g_app.lock.  Posts a JSON goal-event payload to
+ * the configured webhook URL with one retry on failure.           */
+static void fire_webhook(const NMatch *m) {
+    if (!g_app.webhook_enabled || !g_app.webhook_url[0]) return;
+
+    /* Build flags for home/away */
+    char hf[16] = "", af[16] = "";
+    flag_for(m->home_code, hf);
+    flag_for(m->away_code, af);
+
+    /* ISO-8601 timestamp */
+    char ts[32];
+    time_t now = time(NULL);
+    struct tm *tm_utc = gmtime(&now);
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", tm_utc);
+
+    /* Build payload with cJSON */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event",      "goal");
+    cJSON_AddNumberToObject(root, "match_id",   (double)m->id);
+    cJSON *home = cJSON_CreateObject();
+    cJSON_AddStringToObject(home, "code",  m->home_code);
+    cJSON_AddStringToObject(home, "flag",  hf);
+    cJSON_AddNumberToObject(home, "score", (double)m->home_score);
+    cJSON_AddItemToObject(root, "home", home);
+    cJSON *away = cJSON_CreateObject();
+    cJSON_AddStringToObject(away, "code",  m->away_code);
+    cJSON_AddStringToObject(away, "flag",  af);
+    cJSON_AddNumberToObject(away, "score", (double)m->away_score);
+    cJSON_AddItemToObject(root, "away", away);
+    cJSON_AddNumberToObject(root, "elapsed",    (double)m->elapsed);
+    cJSON_AddStringToObject(root, "status",     m->status);
+    cJSON_AddStringToObject(root, "group",      m->group);
+    cJSON_AddStringToObject(root, "last_event", m->last_event);
+    cJSON_AddStringToObject(root, "timestamp",  ts);
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!payload) return;
+
+    struct curl_slist *hdrs = curl_slist_append(NULL, "Content-Type: application/json");
+    for (int attempt = 0; attempt < 2; attempt++) {
+        CURL *c = curl_easy_init();
+        if (!c) break;
+        CurlBuf resp = {NULL, 0};
+        curl_easy_setopt(c, CURLOPT_URL,           g_app.webhook_url);
+        curl_easy_setopt(c, CURLOPT_POSTFIELDS,    payload);
+        curl_easy_setopt(c, CURLOPT_HTTPHEADER,    hdrs);
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA,     &resp);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT,       5L);
+        curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER,1L);
+        CURLcode rc = curl_easy_perform(c);
+        long http_code = -1;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_easy_cleanup(c);
+        LOG("fire_webhook attempt=%d http=%ld rc=%d resp=%s",
+            attempt+1, http_code, (int)rc, resp.data ? resp.data : "(none)");
+        free(resp.data);
+        if (rc == CURLE_OK && http_code >= 200 && http_code < 300) break;
+    }
+    curl_slist_free_all(hdrs);
+    free(payload);
+}
+
 /* ═══════════════════════ Audio Pipeline ════════════════════════
  * Same approach proven in the MLB ACAP app:
  *   1. download_clip()       — fetch MP3 from device mediaclip store
@@ -1325,26 +1397,28 @@ static void do_fetch(void) {
 
     pthread_mutex_lock(&g_app.lock);
 
-    /* ── Goal detection for audio alerts ── */
-    int goal_scored = 0;
-    int goal_clip   = g_app.goal_clip_id;
-    if (g_app.audio_enabled && g_app.audio_volume > 0 && nm > 0 && goal_clip > 0) {
-        for (int i = 0; i < nm; i++) {
-            /* Only tracked teams trigger audio */
-            if (!is_selected(tm[i].home_code) && !is_selected(tm[i].away_code))
-                continue;
-            /* Only during live play (not HT, FT, NS) */
-            if (strcmp(tm[i].status,"1H")!=0 && strcmp(tm[i].status,"2H")!=0 &&
-                strcmp(tm[i].status,"ET")!=0 && strcmp(tm[i].status,"PEN")!=0)
-                continue;
-            /* Compare against previous cached score */
-            for (int p = 0; p < g_app.nmatches; p++) {
-                if (g_app.matches[p].id == tm[i].id) {
-                    if (tm[i].home_score > g_app.matches[p].home_score ||
-                        tm[i].away_score > g_app.matches[p].away_score)
-                        goal_scored = 1;
-                    break;
+    /* ── Goal detection for audio alerts + webhook ── */
+    int goal_scored  = 0;
+    int goal_clip    = g_app.goal_clip_id;
+    int wh_enabled   = g_app.webhook_enabled;
+    NMatch goal_match; memset(&goal_match, 0, sizeof(goal_match));
+    for (int i = 0; i < nm; i++) {
+        /* Only tracked teams trigger events */
+        if (!is_selected(tm[i].home_code) && !is_selected(tm[i].away_code))
+            continue;
+        /* Only during live play */
+        if (strcmp(tm[i].status,"1H")!=0 && strcmp(tm[i].status,"2H")!=0 &&
+            strcmp(tm[i].status,"ET")!=0 && strcmp(tm[i].status,"PEN")!=0)
+            continue;
+        /* Compare against previous cached score */
+        for (int p = 0; p < g_app.nmatches; p++) {
+            if (g_app.matches[p].id == tm[i].id) {
+                if (tm[i].home_score > g_app.matches[p].home_score ||
+                    tm[i].away_score > g_app.matches[p].away_score) {
+                    goal_scored = 1;
+                    goal_match  = tm[i]; /* capture by value before unlock */
                 }
+                break;
             }
         }
     }
@@ -1368,27 +1442,73 @@ static void do_fetch(void) {
     rebuild_queue_locked();
     pthread_mutex_unlock(&g_app.lock);
 
-    /* Play goal sound outside the lock (curl calls must not hold g_app.lock) */
+    /* Fire audio + webhook outside the lock (curl must not hold g_app.lock) */
     if (goal_scored) {
         LOG("GOAL detected for tracked team — playing clip %d", goal_clip);
-        play_clip(goal_clip);
+        if (g_app.audio_enabled && g_app.audio_volume > 0 && goal_clip > 0)
+            play_clip(goal_clip);
+        if (wh_enabled) fire_webhook(&goal_match);
     }
+}
+
+/* ── Adaptive interval computation ───────────────────────────────
+ * Inspects current match cache (caller holds g_app.lock) and
+ * returns the appropriate poll interval in seconds.              */
+static int compute_interval_locked(void) {
+    time_t now = time(NULL);
+    int mode = 0; /* 0=idle, 1=prematch, 2=live */
+
+    for (int i = 0; i < g_app.nmatches; i++) {
+        NMatch *m = &g_app.matches[i];
+        if (!is_selected(m->home_code) && !is_selected(m->away_code)) continue;
+
+        int live = !strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
+                   !strcmp(m->status,"ET")||!strcmp(m->status,"PEN");
+        if (live)        { mode = 2; break; } /* highest priority */
+
+        if (!strcmp(m->status,"NS") && mode < 1) {
+            /* Check if kickoff is within 20 minutes */
+            struct tm tm; memset(&tm,0,sizeof(tm));
+            if (sscanf(m->kickoff_iso,"%d-%d-%dT%d:%d:%d",
+                       &tm.tm_year,&tm.tm_mon,&tm.tm_mday,
+                       &tm.tm_hour,&tm.tm_min,&tm.tm_sec) == 6) {
+                tm.tm_year -= 1900; tm.tm_mon -= 1;
+                time_t ko = timegm(&tm);
+                if (ko > now && (ko - now) <= 1200) mode = 1;
+            }
+        }
+    }
+
+    int iv;
+    if      (mode == 2) { iv = g_app.live_poll_sec;     strcpy(g_app.poll_mode,"live");     }
+    else if (mode == 1) { iv = g_app.prematch_poll_sec;  strcpy(g_app.poll_mode,"prematch"); }
+    else                { iv = g_app.idle_poll_sec;      strcpy(g_app.poll_mode,"idle");     }
+
+    /* Hard floor: never faster than 30 s */
+    if (iv < 30) iv = 30;
+
+    /* Optional manual cap: if poll_sec > 0 and slower than adaptive, use it */
+    if (g_app.poll_sec > 0 && g_app.poll_sec > iv) iv = g_app.poll_sec;
+
+    g_app.effective_poll_sec = iv;
+    return iv;
 }
 
 /* ── Poll thread ──────────────────────────────────────────────── */
 static void *poll_thread(void *arg) {
     (void)arg;
-    LOG("poll thread started (floor=%ds)", MIN_POLL_SEC);
+    LOG("poll thread started (adaptive: live=%ds prematch=%ds idle=%ds)",
+        g_app.live_poll_sec, g_app.prematch_poll_sec, g_app.idle_poll_sec);
     do_fetch(); /* immediate first fetch */
     while (g_app.running) {
         sleep(10);
         pthread_mutex_lock(&g_app.lock);
-        int en=g_app.enabled;
-        int iv=g_app.poll_sec<MIN_POLL_SEC?MIN_POLL_SEC:g_app.poll_sec;
-        time_t lp=g_app.last_poll;
+        int en = g_app.enabled;
+        int iv = compute_interval_locked();
+        time_t lp = g_app.last_poll;
         pthread_mutex_unlock(&g_app.lock);
         if (!en) continue;
-        if (time(NULL)-lp >= iv) do_fetch();
+        if (time(NULL) - lp >= iv) do_fetch();
         else {
             pthread_mutex_lock(&g_app.lock);
             rebuild_queue_locked();
@@ -1452,6 +1572,10 @@ static void handle_client(int fd) {
             g_app.last_src==SRC_MOCK?"mock":"none");
         char ts[32]; strftime(ts,sizeof(ts),"%Y-%m-%dT%H:%M:%S",localtime(&g_app.last_poll));
         cJSON_AddStringToObject(root,"last_poll",ts);
+        cJSON_AddStringToObject(root,"poll_mode",
+            g_app.poll_mode[0] ? g_app.poll_mode : "idle");
+        cJSON_AddNumberToObject(root,"effective_poll_sec",
+            (double)(g_app.effective_poll_sec > 0 ? g_app.effective_poll_sec : g_app.idle_poll_sec));
 
         cJSON *marr=cJSON_CreateArray();
         for (int i=0;i<g_app.nmatches;i++) {
@@ -1590,6 +1714,11 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(root,"fd_key",g_app.fd_key[0]?"***":"");
         cJSON_AddStringToObject(root,"device_user",g_app.dev_user);
         cJSON_AddNumberToObject(root,"poll_interval_sec",g_app.poll_sec);
+        cJSON_AddNumberToObject(root,"live_poll_sec",g_app.live_poll_sec);
+        cJSON_AddNumberToObject(root,"prematch_poll_sec",g_app.prematch_poll_sec);
+        cJSON_AddNumberToObject(root,"idle_poll_sec",g_app.idle_poll_sec);
+        cJSON_AddBoolToObject(root,"webhook_enabled",g_app.webhook_enabled);
+        cJSON_AddStringToObject(root,"webhook_url",g_app.webhook_url[0]?"***":"");
         cJSON_AddBoolToObject(root,"enabled",g_app.enabled);
         cJSON_AddBoolToObject(root,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(root,"demo_mode",g_app.demo_mode);
@@ -1646,11 +1775,23 @@ static void handle_client(int fd) {
         STR_FIELD("text_color", g_app.text_color,16);
         STR_FIELD("bg_color",   g_app.bg_color,  16);
         STR_FIELD("text_size",  g_app.text_size, 16);
-        BOOL_FIELD("enabled",        g_app.enabled);
-        BOOL_FIELD("display_enabled",g_app.disp_enabled);
-        BOOL_FIELD("demo_mode",      g_app.demo_mode);
-        BOOL_FIELD("audio_enabled",  g_app.audio_enabled);
-        NUM_FIELD("poll_interval_sec",g_app.poll_sec);
+        BOOL_FIELD("enabled",          g_app.enabled);
+        BOOL_FIELD("display_enabled",  g_app.disp_enabled);
+        BOOL_FIELD("demo_mode",        g_app.demo_mode);
+        BOOL_FIELD("audio_enabled",    g_app.audio_enabled);
+        BOOL_FIELD("webhook_enabled",  g_app.webhook_enabled);
+        {   /* webhook_url: only update if provided and not "***" */
+            cJSON *_f = cJSON_GetObjectItem(j, "webhook_url");
+            if (cJSON_IsString(_f) && strcmp(_f->valuestring,"***")!=0 && _f->valuestring[0])
+                strncpy(g_app.webhook_url, _f->valuestring, sizeof(g_app.webhook_url)-1);
+        }
+        NUM_FIELD("poll_interval_sec",  g_app.poll_sec);
+        NUM_FIELD("live_poll_sec",       g_app.live_poll_sec);
+        NUM_FIELD("prematch_poll_sec",   g_app.prematch_poll_sec);
+        NUM_FIELD("idle_poll_sec",       g_app.idle_poll_sec);
+        if (g_app.live_poll_sec < 30)    g_app.live_poll_sec = 30;
+        if (g_app.prematch_poll_sec < 30) g_app.prematch_poll_sec = 30;
+        if (g_app.idle_poll_sec < 30)    g_app.idle_poll_sec = 30;
         NUM_FIELD("scroll_speed",    g_app.scroll_speed);
         NUM_FIELD("duration_ms",     g_app.duration_ms);
         NUM_FIELD("audio_volume",    g_app.audio_volume);
@@ -1672,6 +1813,11 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(cfg,"device_user",g_app.dev_user);
         cJSON_AddStringToObject(cfg,"device_pass",g_app.dev_pass);
         cJSON_AddNumberToObject(cfg,"poll_interval_sec",g_app.poll_sec);
+        cJSON_AddNumberToObject(cfg,"live_poll_sec",    g_app.live_poll_sec);
+        cJSON_AddNumberToObject(cfg,"prematch_poll_sec",g_app.prematch_poll_sec);
+        cJSON_AddNumberToObject(cfg,"idle_poll_sec",    g_app.idle_poll_sec);
+        cJSON_AddBoolToObject(cfg,"webhook_enabled",    g_app.webhook_enabled);
+        cJSON_AddStringToObject(cfg,"webhook_url",      g_app.webhook_url);
         cJSON_AddBoolToObject(cfg,"enabled",        g_app.enabled);
         cJSON_AddBoolToObject(cfg,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(cfg,"demo_mode",      g_app.demo_mode);
@@ -1893,6 +2039,62 @@ static void handle_client(int fd) {
         send_json(fd, 200, js ? js : "{}"); free(js); return;
     }
 
+    /* ── POST /test_webhook ── */
+    if (!strcmp(method,"POST") && ROUTE("/test_webhook")) {
+        pthread_mutex_lock(&g_app.lock);
+        char wurl[256]; strncpy(wurl, g_app.webhook_url, sizeof(wurl)-1); wurl[255]='\0';
+        pthread_mutex_unlock(&g_app.lock);
+
+        if (!wurl[0]) {
+            send_json(fd,400,"{\"message\":\"No webhook URL configured\"}");
+            return;
+        }
+
+        /* Build a dummy goal payload */
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root,"event","goal_test");
+        cJSON_AddNumberToObject(root,"match_id",999);
+        cJSON *home=cJSON_CreateObject();
+        cJSON_AddStringToObject(home,"code","USA"); cJSON_AddStringToObject(home,"flag","\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8");
+        cJSON_AddNumberToObject(home,"score",1); cJSON_AddItemToObject(root,"home",home);
+        cJSON *away=cJSON_CreateObject();
+        cJSON_AddStringToObject(away,"code","ENG"); cJSON_AddStringToObject(away,"flag","\xF0\x9F\x87\xAC\xF0\x9F\x87\xA7");
+        cJSON_AddNumberToObject(away,"score",0); cJSON_AddItemToObject(root,"away",away);
+        cJSON_AddNumberToObject(root,"elapsed",45);
+        cJSON_AddStringToObject(root,"status","1H");
+        cJSON_AddStringToObject(root,"group","Group A");
+        cJSON_AddStringToObject(root,"last_event","\xE2\x9A\xBD GOAL 45' Pulisic (USA)");
+        char ts[32]; time_t now=time(NULL);
+        strftime(ts,sizeof(ts),"%Y-%m-%dT%H:%M:%SZ",gmtime(&now));
+        cJSON_AddStringToObject(root,"timestamp",ts);
+        char *payload=cJSON_PrintUnformatted(root); cJSON_Delete(root);
+
+        struct curl_slist *hdrs=curl_slist_append(NULL,"Content-Type: application/json");
+        CURL *c=curl_easy_init();
+        CurlBuf resp={NULL,0};
+        curl_easy_setopt(c,CURLOPT_URL,           wurl);
+        curl_easy_setopt(c,CURLOPT_POSTFIELDS,    payload);
+        curl_easy_setopt(c,CURLOPT_HTTPHEADER,    hdrs);
+        curl_easy_setopt(c,CURLOPT_WRITEFUNCTION, curl_write_cb);
+        curl_easy_setopt(c,CURLOPT_WRITEDATA,     &resp);
+        curl_easy_setopt(c,CURLOPT_TIMEOUT,       5L);
+        curl_easy_setopt(c,CURLOPT_SSL_VERIFYPEER,1L);
+        CURLcode rc=curl_easy_perform(c);
+        long http_code=-1;
+        curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&http_code);
+        curl_easy_cleanup(c); curl_slist_free_all(hdrs); free(payload);
+        LOG("test_webhook http=%ld rc=%d", http_code, (int)rc);
+
+        cJSON *out=cJSON_CreateObject();
+        cJSON_AddNumberToObject(out,"http_code",(double)http_code);
+        cJSON_AddNumberToObject(out,"curl_code",(double)rc);
+        cJSON_AddStringToObject(out,"curl_error",curl_easy_strerror(rc));
+        cJSON_AddStringToObject(out,"response",resp.data?resp.data:"(none)");
+        char *js=cJSON_PrintUnformatted(out); cJSON_Delete(out);
+        free(resp.data);
+        send_json(fd,200,js?js:"{}"); free(js); return;
+    }
+
     LOG("404 method=%s path=%s",method,path);
     send_json(fd,404,"{\"message\":\"Not found\"}");
 }
@@ -1925,6 +2127,9 @@ static void load_config(void) {
     strcpy(g_app.text_size,"large"); g_app.scroll_speed=3; g_app.duration_ms=15000;
     g_app.audio_enabled=1; g_app.audio_volume=75;
     g_app.goal_clip_id=1;  g_app.alert_clip_id=2;
+    g_app.live_poll_sec=30; g_app.prematch_poll_sec=90; g_app.idle_poll_sec=300;
+    strcpy(g_app.poll_mode,"idle"); g_app.effective_poll_sec=300;
+    g_app.webhook_enabled=0;
 
     if (!g_app.axp) return;
     GError *err=NULL; gchar *val=NULL;
@@ -1957,13 +2162,18 @@ static void load_config(void) {
     LB("enabled",        g_app.enabled);
     LB("display_enabled",g_app.disp_enabled);
     LB("demo_mode",      g_app.demo_mode);
-    LB("audio_enabled",  g_app.audio_enabled);
-    LN("poll_interval_sec",g_app.poll_sec);
-    LN("scroll_speed",   g_app.scroll_speed);
-    LN("duration_ms",    g_app.duration_ms);
-    LN("audio_volume",   g_app.audio_volume);
-    LN("goal_clip_id",   g_app.goal_clip_id);
-    LN("alert_clip_id",  g_app.alert_clip_id);
+    LB("audio_enabled",      g_app.audio_enabled);
+    LB("webhook_enabled",    g_app.webhook_enabled);
+    LS("webhook_url",        g_app.webhook_url,   256);
+    LN("poll_interval_sec",  g_app.poll_sec);
+    LN("live_poll_sec",      g_app.live_poll_sec);
+    LN("prematch_poll_sec",  g_app.prematch_poll_sec);
+    LN("idle_poll_sec",      g_app.idle_poll_sec);
+    LN("scroll_speed",       g_app.scroll_speed);
+    LN("duration_ms",        g_app.duration_ms);
+    LN("audio_volume",       g_app.audio_volume);
+    LN("goal_clip_id",       g_app.goal_clip_id);
+    LN("alert_clip_id",      g_app.alert_clip_id);
 #undef LS
 #undef LB
 #undef LN

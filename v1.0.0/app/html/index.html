@@ -12,7 +12,7 @@
     <div class="header">
         <div class="logo">&#127942;</div>
         <h1>FIFA World Cup 2026</h1>
-        <p class="subtitle">gscarlet22 design &mdash; v1.0.3</p>
+        <p class="subtitle">gscarlet22 design &mdash; v1.0.4</p>
     </div>
 
     <div class="tabs">
@@ -45,6 +45,8 @@
             <span id="st-enabled" class="badge">--</span>
             <span class="status-label" style="margin-left:10px;">Last poll</span>
             <span id="st-poll" class="poll-time">--</span>
+            <span class="status-label" style="margin-left:10px;">Poll</span>
+            <span id="st-poll-mode" class="poll-time">--</span>
         </div>
     </div>
 
@@ -121,14 +123,32 @@
         <hr class="divider">
 
         <h3 class="section-title">Polling</h3>
-        <p class="hint">3 minutes is the hard minimum enforced by the app to protect free API tier limits.</p>
+        <p class="hint">
+            The app adapts automatically: faster during live matches, slower when idle.
+            30 s is the hard minimum. The <em>Manual Cap</em> (optional) overrides to a slower rate — useful for protecting API quota.
+        </p>
+        <div class="form-row">
+            <div class="form-group third">
+                <label for="live-poll-sec">Live (s)</label>
+                <input type="number" id="live-poll-sec" min="30" max="300" value="30">
+            </div>
+            <div class="form-group third">
+                <label for="prematch-poll-sec">Pre-match (s)</label>
+                <input type="number" id="prematch-poll-sec" min="30" max="600" value="90">
+            </div>
+            <div class="form-group third">
+                <label for="idle-poll-sec">Idle (s)</label>
+                <input type="number" id="idle-poll-sec" min="30" max="3600" value="300">
+            </div>
+        </div>
         <div class="form-group">
-            <label for="poll-interval">Poll Interval</label>
+            <label for="poll-interval">Manual Cap (optional) <span class="hint-inline">0 = use adaptive only</span></label>
             <select id="poll-interval">
-                <option value="180">3 min (minimum)</option>
-                <option value="300">5 min</option>
-                <option value="600">10 min</option>
-                <option value="900" selected>15 min (recommended for free tier)</option>
+                <option value="0" selected>Adaptive only (recommended)</option>
+                <option value="180">3 min cap</option>
+                <option value="300">5 min cap</option>
+                <option value="600">10 min cap</option>
+                <option value="900">15 min cap</option>
             </select>
         </div>
 
@@ -164,6 +184,24 @@
             </div>
         </div>
         <button id="btn-test-display" class="btn btn-secondary btn-full">&#128250; Test Display Message</button>
+
+        <hr class="divider">
+
+        <h3 class="section-title">&#128279; Goal Event Push (Webhook)</h3>
+        <p class="hint">
+            When a tracked team scores, the app POSTs a JSON payload to this URL.
+            Compatible with Home Assistant, Discord bots, Zapier, IFTTT, and any HTTP endpoint.
+        </p>
+        <div class="form-group toggle-row">
+            <label>Webhook Enabled</label>
+            <label class="toggle"><input type="checkbox" id="webhook-enabled"><span class="slider"></span></label>
+        </div>
+        <div class="form-group">
+            <label for="webhook-url">Webhook URL</label>
+            <input type="password" id="webhook-url" placeholder="https://&hellip;" autocomplete="off">
+        </div>
+        <button id="btn-test-webhook" class="btn btn-secondary btn-full">&#9654; Send Test Payload</button>
+        <div id="webhook-msg" class="save-msg"></div>
 
         <hr class="divider">
 
