@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.4  gscarlet22 design  (Sprint 1: adaptive poll + webhook)
+ * v1.0.5  gscarlet22 design  (Sprint 3: goal strobe + team colors)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.4"
+#define APP_VER         "1.0.5"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -229,6 +229,8 @@ typedef struct {
     int  alert_clip_id;     /* mediaclip store ID for halftime/KO sound  */
     char webhook_url[256];  /* outbound goal event push URL (empty=off)  */
     int  webhook_enabled;   /* 0 = disabled                              */
+    int  strobe_enabled;    /* flash team colors on goal (0=off)         */
+    int  strobe_flashes;    /* number of alternating flashes (2–10)      */
     char text_color[16];
     char bg_color[16];
     char text_size[16];
@@ -249,6 +251,7 @@ typedef struct {
     pthread_mutex_t lock;
     AXParameter    *axp;
     int             running;
+    int             strobe_active; /* display thread pauses during goal flash */
 } AppState;
 
 static AppState g_app;
@@ -1329,6 +1332,98 @@ static long display_show(const char *msg, char *resp_out, size_t resp_sz) {
     return (rc==CURLE_OK)?http_code:-1;
 }
 
+/* ── Display flash (explicit colors — used by strobe_goal) ───── */
+/* Pushes a single message with caller-supplied colors.  Does NOT
+ * read g_app.text_color / bg_color, preventing races with strobe. */
+static long display_flash(const char *msg, const char *bg, const char *fg,
+                           int dur_ms) {
+    if (!g_app.disp_enabled) return 0;
+    CURL *curl = curl_easy_init(); if (!curl) return -1;
+    char up[160];
+    pthread_mutex_lock(&g_app.lock);
+    snprintf(up, sizeof(up), "%s:%s", g_app.dev_user, g_app.dev_pass);
+    int speed = g_app.scroll_speed > 0 ? g_app.scroll_speed : 3;
+    pthread_mutex_unlock(&g_app.lock);
+
+    cJSON *body = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "message",          msg);
+    cJSON_AddStringToObject(data, "textColor",        fg[0] ? fg : "#FFFFFF");
+    cJSON_AddStringToObject(data, "backgroundColor",  bg[0] ? bg : "#000000");
+    cJSON_AddStringToObject(data, "textSize",         "large");
+    cJSON_AddNumberToObject(data, "scrollSpeed",      (double)speed);
+    cJSON_AddStringToObject(data, "scrollDirection",  "fromRightToLeft");
+    cJSON *dur = cJSON_CreateObject();
+    cJSON_AddStringToObject(dur,  "type",  "time");
+    cJSON_AddNumberToObject(dur,  "value", (double)(dur_ms > 0 ? dur_ms : 2000));
+    cJSON_AddItemToObject(data, "duration", dur);
+    cJSON_AddItemToObject(body, "data", data);
+    char *js = cJSON_PrintUnformatted(body); cJSON_Delete(body);
+
+    HBuf resp = {malloc(4096), 0, 4096};
+    struct curl_slist *hdrs = curl_slist_append(NULL, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_URL,           DISP_API);
+    curl_easy_setopt(curl, CURLOPT_POST,          1L);
+    curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS,js);
+    curl_easy_setopt(curl, CURLOPT_USERPWD,       up);
+    curl_easy_setopt(curl, CURLOPT_HTTPAUTH,      CURLAUTH_BASIC);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER,0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST,0L);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    hdrs);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, hbuf_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       5L);
+    CURLcode rc = curl_easy_perform(curl);
+    long code = -1;
+    if (rc == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    free(js); free(resp.data); curl_slist_free_all(hdrs); curl_easy_cleanup(curl);
+    return (rc == CURLE_OK) ? code : -1;
+}
+
+/* ── Goal strobe (called OUTSIDE g_app.lock) ──────────────────── */
+/* Flashes the display in the scoring team's kit colors.
+ * Pauses the display thread via strobe_active to avoid interleave. */
+static void strobe_goal(const NMatch *m, int side, int flashes) {
+    if (!g_app.disp_enabled) return;
+    if (flashes < 2)  flashes = 2;
+    if (flashes > 10) flashes = 10;
+
+    /* Scoring team kit colors */
+    const char *code = (side == 0) ? m->home_code : m->away_code;
+    int ti = team_by_code(code);
+    const char *kb = "#FFD700";  /* fallback: gold */
+    const char *kf = "#000000";
+    if (ti >= 0) { kb = TEAMS[ti].bg; kf = TEAMS[ti].fg; }
+
+    /* Goal flash message */
+    char hf[16], af[16];
+    flag_for(m->home_code, hf);
+    flag_for(m->away_code, af);
+    char msg[MSG_SZ];
+    snprintf(msg, MSG_SZ,
+        "\xE2\x9A\xBD GOAL! %s%s %d\xE2\x80\x93%d %s%s  %s",
+        hf, m->home_code, m->home_score,
+        m->away_score, af, m->away_code, m->group);
+
+    /* Pause the display thread so it doesn't interleave */
+    pthread_mutex_lock(&g_app.lock);
+    g_app.strobe_active = 1;
+    pthread_mutex_unlock(&g_app.lock);
+
+    /* Alternating primary / inverted kit colors */
+    for (int f = 0; f < flashes && g_app.running; f++) {
+        const char *b = (f % 2 == 0) ? kb : kf;
+        const char *t = (f % 2 == 0) ? kf : kb;
+        display_flash(msg, b, t, 1800);
+        usleep(1900000);
+    }
+
+    pthread_mutex_lock(&g_app.lock);
+    g_app.strobe_active = 0;
+    pthread_mutex_unlock(&g_app.lock);
+    LOG("strobe_goal: %d flashes for %s (side=%d)", flashes, code, side);
+}
+
 /* ── Display thread ───────────────────────────────────────────── */
 static void *display_thread(void *arg) {
     (void)arg;
@@ -1344,7 +1439,7 @@ static void *display_thread(void *arg) {
         pthread_mutex_unlock(&g_dlock);
 
         pthread_mutex_lock(&g_app.lock);
-        int go=g_app.enabled&&g_app.disp_enabled;
+        int go=g_app.enabled&&g_app.disp_enabled&&!g_app.strobe_active;
         pthread_mutex_unlock(&g_app.lock);
 
         if (go) {
@@ -1399,8 +1494,11 @@ static void do_fetch(void) {
 
     /* ── Goal detection for audio alerts + webhook ── */
     int goal_scored  = 0;
+    int goal_side    = 0; /* 0=home scored, 1=away scored */
     int goal_clip    = g_app.goal_clip_id;
     int wh_enabled   = g_app.webhook_enabled;
+    int str_enabled  = g_app.strobe_enabled;
+    int str_flashes  = g_app.strobe_flashes;
     NMatch goal_match; memset(&goal_match, 0, sizeof(goal_match));
     for (int i = 0; i < nm; i++) {
         /* Only tracked teams trigger events */
@@ -1410,13 +1508,15 @@ static void do_fetch(void) {
         if (strcmp(tm[i].status,"1H")!=0 && strcmp(tm[i].status,"2H")!=0 &&
             strcmp(tm[i].status,"ET")!=0 && strcmp(tm[i].status,"PEN")!=0)
             continue;
-        /* Compare against previous cached score */
+        /* Compare against previous cached score — capture which side scored */
         for (int p = 0; p < g_app.nmatches; p++) {
             if (g_app.matches[p].id == tm[i].id) {
-                if (tm[i].home_score > g_app.matches[p].home_score ||
-                    tm[i].away_score > g_app.matches[p].away_score) {
-                    goal_scored = 1;
+                if (tm[i].home_score > g_app.matches[p].home_score) {
+                    goal_scored = 1; goal_side = 0;
                     goal_match  = tm[i]; /* capture by value before unlock */
+                } else if (tm[i].away_score > g_app.matches[p].away_score) {
+                    goal_scored = 1; goal_side = 1;
+                    goal_match  = tm[i];
                 }
                 break;
             }
@@ -1442,12 +1542,13 @@ static void do_fetch(void) {
     rebuild_queue_locked();
     pthread_mutex_unlock(&g_app.lock);
 
-    /* Fire audio + webhook outside the lock (curl must not hold g_app.lock) */
+    /* Fire audio / strobe / webhook outside the lock */
     if (goal_scored) {
-        LOG("GOAL detected for tracked team — playing clip %d", goal_clip);
+        LOG("GOAL detected — side=%d clip=%d strobe=%d", goal_side, goal_clip, str_enabled);
         if (g_app.audio_enabled && g_app.audio_volume > 0 && goal_clip > 0)
             play_clip(goal_clip);
-        if (wh_enabled) fire_webhook(&goal_match);
+        if (str_enabled) strobe_goal(&goal_match, goal_side, str_flashes);
+        if (wh_enabled)  fire_webhook(&goal_match);
     }
 }
 
@@ -1719,6 +1820,8 @@ static void handle_client(int fd) {
         cJSON_AddNumberToObject(root,"idle_poll_sec",g_app.idle_poll_sec);
         cJSON_AddBoolToObject(root,"webhook_enabled",g_app.webhook_enabled);
         cJSON_AddStringToObject(root,"webhook_url",g_app.webhook_url[0]?"***":"");
+        cJSON_AddBoolToObject(root,"strobe_enabled",g_app.strobe_enabled);
+        cJSON_AddNumberToObject(root,"strobe_flashes",(double)g_app.strobe_flashes);
         cJSON_AddBoolToObject(root,"enabled",g_app.enabled);
         cJSON_AddBoolToObject(root,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(root,"demo_mode",g_app.demo_mode);
@@ -1780,6 +1883,10 @@ static void handle_client(int fd) {
         BOOL_FIELD("demo_mode",        g_app.demo_mode);
         BOOL_FIELD("audio_enabled",    g_app.audio_enabled);
         BOOL_FIELD("webhook_enabled",  g_app.webhook_enabled);
+        BOOL_FIELD("strobe_enabled",   g_app.strobe_enabled);
+        NUM_FIELD("strobe_flashes",    g_app.strobe_flashes);
+        if (g_app.strobe_flashes < 2)  g_app.strobe_flashes = 2;
+        if (g_app.strobe_flashes > 10) g_app.strobe_flashes = 10;
         {   /* webhook_url: only update if provided and not "***" */
             cJSON *_f = cJSON_GetObjectItem(j, "webhook_url");
             if (cJSON_IsString(_f) && strcmp(_f->valuestring,"***")!=0 && _f->valuestring[0])
@@ -1818,6 +1925,8 @@ static void handle_client(int fd) {
         cJSON_AddNumberToObject(cfg,"idle_poll_sec",    g_app.idle_poll_sec);
         cJSON_AddBoolToObject(cfg,"webhook_enabled",    g_app.webhook_enabled);
         cJSON_AddStringToObject(cfg,"webhook_url",      g_app.webhook_url);
+        cJSON_AddBoolToObject(cfg,"strobe_enabled",     g_app.strobe_enabled);
+        cJSON_AddNumberToObject(cfg,"strobe_flashes",   (double)g_app.strobe_flashes);
         cJSON_AddBoolToObject(cfg,"enabled",        g_app.enabled);
         cJSON_AddBoolToObject(cfg,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(cfg,"demo_mode",      g_app.demo_mode);
@@ -2130,6 +2239,7 @@ static void load_config(void) {
     g_app.live_poll_sec=30; g_app.prematch_poll_sec=90; g_app.idle_poll_sec=300;
     strcpy(g_app.poll_mode,"idle"); g_app.effective_poll_sec=300;
     g_app.webhook_enabled=0;
+    g_app.strobe_enabled=1; g_app.strobe_flashes=5;
 
     if (!g_app.axp) return;
     GError *err=NULL; gchar *val=NULL;
@@ -2165,6 +2275,8 @@ static void load_config(void) {
     LB("audio_enabled",      g_app.audio_enabled);
     LB("webhook_enabled",    g_app.webhook_enabled);
     LS("webhook_url",        g_app.webhook_url,   256);
+    LB("strobe_enabled",     g_app.strobe_enabled);
+    LN("strobe_flashes",     g_app.strobe_flashes);
     LN("poll_interval_sec",  g_app.poll_sec);
     LN("live_poll_sec",      g_app.live_poll_sec);
     LN("prematch_poll_sec",  g_app.prematch_poll_sec);

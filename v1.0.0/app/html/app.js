@@ -292,6 +292,8 @@
             document.getElementById('webhook-enabled').checked = !!d.webhook_enabled;
             document.getElementById('webhook-url').placeholder =
                 d.webhook_url === '***' ? '(configured — paste to update)' : 'https://\u2026';
+            document.getElementById('strobe-enabled').checked = (d.strobe_enabled !== false);
+            document.getElementById('strobe-flashes').value  = String(d.strobe_flashes != null ? d.strobe_flashes : 5);
             document.getElementById('audio-enabled').checked = (d.audio_enabled !== false);
             document.getElementById('audio-volume').value    = String(d.audio_volume != null ? d.audio_volume : 75);
             document.getElementById('audio-volume-val').textContent = String(d.audio_volume != null ? d.audio_volume : 75);
@@ -336,6 +338,8 @@
             text_size:         document.getElementById('text-size').value,
             scroll_speed:      parseInt(document.getElementById('scroll-speed').value, 10),
             duration_ms:       parseInt(document.getElementById('duration-sec').value, 10) * 1000,
+            strobe_enabled:    document.getElementById('strobe-enabled').checked,
+            strobe_flashes:    parseInt(document.getElementById('strobe-flashes').value, 10),
             audio_enabled:     document.getElementById('audio-enabled').checked,
             audio_volume:      parseInt(document.getElementById('audio-volume').value, 10),
             goal_clip_id:      parseInt(document.getElementById('goal-clip-id').value, 10),
