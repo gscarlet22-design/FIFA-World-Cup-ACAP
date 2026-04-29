@@ -338,6 +338,51 @@
     });
 
     var teamOverrides = {}; /* code → { clip_id, flashes } */
+    var clipList = [];     /* [{id, name}] populated by loadClips() */
+
+    /* Fetch clip list from device, then call cb(). */
+    function loadClips(cb) {
+        api('/clips').then(function (r) { return r.json(); }).then(function (d) {
+            clipList = d.clips || [];
+            if (cb) cb();
+        }).catch(function () { if (cb) cb(); });
+    }
+
+    /* Returns a <select> DOM element pre-selected to selectedId.
+       withGlobal=true prepends a "Use global (#0)" option. */
+    function buildClipSelect(selectedId, withGlobal) {
+        var sel = document.createElement('select');
+        sel.className = 'form-control';
+        if (withGlobal) {
+            var gopt = document.createElement('option');
+            gopt.value = '0';
+            gopt.textContent = 'Use global (#0)';
+            if (!selectedId) gopt.selected = true;
+            sel.appendChild(gopt);
+        }
+        clipList.forEach(function (cl) {
+            var opt = document.createElement('option');
+            opt.value = String(cl.id);
+            opt.textContent = cl.name + ' (#' + cl.id + ')';
+            if (cl.id === selectedId) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        return sel;
+    }
+
+    /* Returns an HTML string <select> for use inside innerHTML templates.
+       withGlobal=true prepends a "Use global (#0)" option. */
+    function clipSelectHTML(selectedId, cls, code, withGlobal) {
+        var opts = '';
+        if (withGlobal) {
+            opts += '<option value="0"' + (!selectedId ? ' selected' : '') + '>Use global (#0)</option>';
+        }
+        clipList.forEach(function (cl) {
+            opts += '<option value="' + cl.id + '"' + (cl.id === selectedId ? ' selected' : '') + '>'
+                  + esc(cl.name) + ' (#' + cl.id + ')</option>';
+        });
+        return '<select class="' + cls + ' form-control" data-code="' + esc(code) + '">' + opts + '</select>';
+    }
 
     function renderTeamOverrides() {
         var el = document.getElementById('team-overrides-grid');
@@ -347,7 +392,7 @@
             return;
         }
         el.innerHTML = '<table class="diag-table" style="width:100%">'
-            + '<thead><tr><th></th><th>Team</th><th>Clip ID <span class="hint-inline">(0=global)</span></th><th>Flashes <span class="hint-inline">(0=global)</span></th></tr></thead>'
+            + '<thead><tr><th></th><th>Team</th><th>Clip <span class="hint-inline">(0=global)</span></th><th>Flashes <span class="hint-inline">(0=global)</span></th></tr></thead>'
             + '<tbody>'
             + codes.map(function (code) {
                 var t = allTeams.find(function (t) { return t.code === code; }) || {};
@@ -355,7 +400,7 @@
                 return '<tr>'
                     + '<td>' + (t.flag || '') + '</td>'
                     + '<td><strong>' + esc(code) + '</strong></td>'
-                    + '<td><input type="number" class="ov-clip" data-code="' + esc(code) + '" min="0" max="9" value="' + ov.clip_id + '" style="width:56px"></td>'
+                    + '<td>' + clipSelectHTML(ov.clip_id, 'ov-clip', code, true) + '</td>'
                     + '<td><input type="number" class="ov-flash" data-code="' + esc(code) + '" min="0" max="10" value="' + ov.flashes + '" style="width:56px"></td>'
                     + '</tr>';
             }).join('')
@@ -387,8 +432,17 @@
             document.getElementById('audio-enabled').checked = (d.audio_enabled !== false);
             document.getElementById('audio-volume').value    = String(d.audio_volume != null ? d.audio_volume : 75);
             document.getElementById('audio-volume-val').textContent = String(d.audio_volume != null ? d.audio_volume : 75);
-            document.getElementById('goal-clip-id').value   = String(d.goal_clip_id  || 1);
-            document.getElementById('alert-clip-id').value  = String(d.alert_clip_id || 2);
+
+            /* Inject clip dropdowns populated from device clip list */
+            var goalSel = buildClipSelect(d.goal_clip_id || 1, false);
+            goalSel.id  = 'goal-clip-id';
+            var gWrap   = document.getElementById('goal-clip-wrap');
+            gWrap.innerHTML = ''; gWrap.appendChild(goalSel);
+
+            var alertSel = buildClipSelect(d.alert_clip_id || 2, false);
+            alertSel.id  = 'alert-clip-id';
+            var aWrap    = document.getElementById('alert-clip-wrap');
+            aWrap.innerHTML = ''; aWrap.appendChild(alertSel);
 
             /* Rebuild selection from config */
             selectedCodes = {};
@@ -409,7 +463,7 @@
                 d.fd_key === '***' ? '(key saved — paste to update)' : 'Paste key here\u2026';
         }).catch(function () {});
     }
-    loadConfig();
+    loadClips(loadConfig);
 
     function showMsg(txt, ok) {
         var el = document.getElementById('save-msg');

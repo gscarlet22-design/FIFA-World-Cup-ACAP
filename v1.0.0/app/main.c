@@ -2274,7 +2274,9 @@ static void handle_client(int fd) {
     }
 
     /* ── GET /clips ── */
-    /* Lists clips currently in the device mediaclip store (raw XML proxied). */
+    /* Lists clips from device param.cgi → { clips: [{id, name}] }
+       Parses "root.MediaClip.M{N}.Name={name}" key-value pairs from
+       param.cgi (same approach as MLB ACAP app). */
     if (!strcmp(method,"GET") && ROUTE("/clips")) {
         pthread_mutex_lock(&g_app.lock);
         char user[64], pass[64];
@@ -2288,23 +2290,48 @@ static void handle_client(int fd) {
         CURL *c = curl_easy_init();
         CurlBuf buf = {NULL, 0};
         curl_easy_setopt(c, CURLOPT_URL,
-            "http://127.0.0.1/axis-cgi/mediaclip.cgi?action=list");
+            "http://127.0.0.1/axis-cgi/param.cgi?action=list&group=root.MediaClip");
         curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
         curl_easy_setopt(c, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
         curl_easy_setopt(c, CURLOPT_WRITEDATA,     &buf);
         curl_easy_setopt(c, CURLOPT_TIMEOUT,       8L);
-        CURLcode rc = curl_easy_perform(c);
-        long http_code = -1;
-        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_easy_perform(c);
         curl_easy_cleanup(c);
 
-        cJSON *root = cJSON_CreateObject();
-        cJSON_AddNumberToObject(root, "http_code", (double)http_code);
-        cJSON_AddNumberToObject(root, "curl_code", (double)rc);
-        cJSON_AddStringToObject(root, "body", buf.data ? buf.data : "");
-        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        cJSON *root  = cJSON_CreateObject();
+        cJSON *clips = cJSON_CreateArray();
+        cJSON_AddItemToObject(root, "clips", clips);
+
+        if (buf.data) {
+            char *line = buf.data;
+            while (*line) {
+                char *nl = strpbrk(line, "\r\n");
+                if (nl) *nl = '\0';
+                int idx = 0; char name[128] = {0};
+                if (sscanf(line, "root.MediaClip.M%d.Name=%127[^\r\n]",
+                           &idx, name) == 2) {
+                    cJSON *clip = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(clip, "id",   (double)idx);
+                    cJSON_AddStringToObject(clip, "name", name);
+                    cJSON_AddItemToArray(clips, clip);
+                }
+                if (!nl) break;
+                line = nl + 1;
+                while (*line == '\r' || *line == '\n') line++;
+            }
+        }
+
+        /* Fallback: return a placeholder when no clips are found */
+        if (cJSON_GetArraySize(clips) == 0) {
+            cJSON *clip = cJSON_CreateObject();
+            cJSON_AddNumberToObject(clip, "id",   1.0);
+            cJSON_AddStringToObject(clip, "name", "Default Notification");
+            cJSON_AddItemToArray(clips, clip);
+        }
+
         free(buf.data);
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
         send_json(fd, 200, js ? js : "{}"); free(js); return;
     }
 
