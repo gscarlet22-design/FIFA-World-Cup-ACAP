@@ -15,6 +15,7 @@
             tab.classList.add('active');
             document.getElementById(tab.dataset.tab).classList.add('active');
             if (tab.dataset.tab === 'standings') refreshStandings();
+            if (tab.dataset.tab === 'bracket')   refreshBracket();
             if (tab.dataset.tab === 'scorers')   refreshScorers();
         });
     });
@@ -178,6 +179,63 @@
         }).catch(function () {
             document.getElementById('standings-grid').innerHTML =
                 '<div class="empty-msg error">Could not load standings.</div>';
+        });
+    }
+
+    /* ── Bracket Tab ─────────────────────────────────────── */
+    function refreshBracket() {
+        api('/bracket').then(function (r) { return r.json(); }).then(function (d) {
+            var el = document.getElementById('bracket-grid');
+            var rounds = d.rounds || [];
+            if (!rounds.length) {
+                el.innerHTML = '<div class="empty-msg">No knockout matches yet. Check back after the group stage.</div>';
+                return;
+            }
+            el.innerHTML = rounds.map(function (r) {
+                var cards = (r.matches || []).map(function (m) {
+                    var live     = isLive(m.status);
+                    var ft       = m.status === 'FT';
+                    var cls      = live ? 'match-card live' : ft ? 'match-card finished' : 'match-card';
+                    var tracked  = m.tracked ? ' tracked' : '';
+                    var stLabel  = statusLabel(m.status, m.elapsed);
+                    var scoreHtml = (live || ft)
+                        ? '<span class="mc-score">' + m.home_score + '</span>'
+                          + '<span class="mc-sep">&ndash;</span>'
+                          + '<span class="mc-score">' + m.away_score + '</span>'
+                        : '<span class="mc-score muted">&mdash;</span>'
+                          + '<span class="mc-sep">vs</span>'
+                          + '<span class="mc-score muted">&mdash;</span>';
+                    var eventHtml = '';
+                    if (m.last_event) {
+                        var evText = esc(m.last_event);
+                        evText = evText.replace(/(\d+(?:\+\d+)?') ([^(]+) \(/, function (_, min, name) {
+                            return min + ' <strong>' + name.trim() + '</strong> (';
+                        });
+                        eventHtml = '<div class="mc-event">' + evText + '</div>';
+                    }
+                    var koHtml = (!live && !ft && m.kickoff)
+                        ? '<div class="mc-kickoff">' + esc(m.kickoff.replace('T',' ').replace('Z',' UTC').substring(0,19)) + '</div>' : '';
+                    return '<div class="' + cls + tracked + '">'
+                        + '<div class="mc-header">'
+                        +   '<span class="mc-group">' + esc(m.round) + '</span>'
+                        +   '<span class="mc-clock ' + (live ? 'live-clock' : '') + '">' + esc(stLabel) + '</span>'
+                        + '</div>'
+                        + '<div class="mc-body">'
+                        +   '<div class="mc-team home"><span class="mc-flag">' + (m.home_flag||'') + '</span><span class="mc-code">' + esc(m.home_code) + '</span></div>'
+                        +   '<div class="mc-scores">' + scoreHtml + '</div>'
+                        +   '<div class="mc-team away"><span class="mc-code">' + esc(m.away_code) + '</span><span class="mc-flag">' + (m.away_flag||'') + '</span></div>'
+                        + '</div>'
+                        + eventHtml + koHtml
+                        + '</div>';
+                }).join('');
+                return '<div class="bracket-round">'
+                    + '<div class="section-label">' + esc(r.name) + '</div>'
+                    + cards
+                    + '</div>';
+            }).join('');
+        }).catch(function () {
+            document.getElementById('bracket-grid').innerHTML =
+                '<div class="empty-msg error">Could not load bracket.</div>';
         });
     }
 

@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.6  gscarlet22 design  (Sprint 4: goal scorer event parsing)
+ * v1.0.7  gscarlet22 design  (Sprint 5: knockout bracket tab)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.6"
+#define APP_VER         "1.0.7"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -187,6 +187,7 @@ typedef struct {
     int  elapsed;
     int  extra;                /* injury / added time                        */
     char group[12];            /* "Group A"                                  */
+    char round[32];            /* "R32","R16","QF","SF","Final",etc or ""    */
     char kickoff_iso[32];      /* ISO-8601 UTC for NS matches                */
     char last_event[128];      /* "⚽ GOAL 58' Pulisic (USA)"               */
 } NMatch;
@@ -413,6 +414,24 @@ static DataSrc fetch_ep(const char *af_path, const char *fd_path,
 
 /* ═══════════════ Parsers — api-football format ══════════════════ */
 
+/* Normalise a raw round/stage string from either API into a short label.
+ * Group-stage strings produce "" (caller leaves round[0]='\0'). */
+static void norm_round(const char *s, char *out) {
+    out[0] = '\0';
+    if (!s || !s[0]) return;
+    /* Convert to uppercase for case-insensitive checks */
+    char u[64]; int i;
+    for (i=0; s[i] && i<63; i++) u[i]=(char)toupper((unsigned char)s[i]);
+    u[i]='\0';
+    if      (strstr(u,"ROUND OF 32")  || strstr(u,"R32")) strcpy(out,"R32");
+    else if (strstr(u,"ROUND OF 16")  || strstr(u,"R16")) strcpy(out,"R16");
+    else if (strstr(u,"QUARTER"))                          strcpy(out,"QF");
+    else if (strstr(u,"SEMI"))                             strcpy(out,"SF");
+    else if (strstr(u,"THIRD") || strstr(u,"3RD"))         strcpy(out,"3rd Place");
+    else if (strstr(u,"FINAL"))                            strcpy(out,"Final");
+    /* else: group stage or unknown → leave empty */
+}
+
 static void af_norm_status(const char *s, char *out) {
     if (!s) { strcpy(out,"NS"); return; }
     strncpy(out, s, 7); out[7]='\0';
@@ -453,10 +472,12 @@ static int af_parse_fixtures(const char *json,
         cJSON *dt = cJSON_GetObjectItem(fix,"date");
         if (cJSON_IsString(dt)) strncpy(m->kickoff_iso, dt->valuestring, 31);
 
-        /* group label */
+        /* group label + round */
         cJSON *grpobj = cJSON_GetObjectItem(lg,"group");
         if (cJSON_IsString(grpobj)) { strncpy(m->group, grpobj->valuestring, 11); m->group[11]='\0'; }
         else { memcpy(m->group,"Group Stage",11); m->group[11]='\0'; }
+        cJSON *rndobj = cJSON_GetObjectItem(lg,"round");
+        norm_round(cJSON_IsString(rndobj)?rndobj->valuestring:"", m->round);
 
         /* teams — try tla field first, fall back to name fuzzy-match */
         cJSON *home = cJSON_GetObjectItem(tms,"home");
@@ -671,6 +692,8 @@ static int fd_parse_matches(const char *json,
         cJSON *grp=cJSON_GetObjectItem(item,"group");
         if (cJSON_IsString(grp)) strncpy(m->group,grp->valuestring,11);
         else strncpy(m->group,"Group Stage",11);
+        cJSON *stg=cJSON_GetObjectItem(item,"stage");
+        norm_round(cJSON_IsString(stg)?stg->valuestring:"", m->round);
 
         cJSON *ht  =cJSON_GetObjectItem(item,"homeTeam");
         cJSON *at  =cJSON_GetObjectItem(item,"awayTeam");
@@ -842,6 +865,29 @@ static void rebuild_queue_locked(void) {
     int    durs[MAX_DISP_MSG];
     int    cnt=0;
     int    dur = g_app.duration_ms>0 ? g_app.duration_ms : 15000;
+
+    /* ── Pass 0: live knockout matches for selected teams ── */
+    for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
+        NMatch *m=&g_app.matches[i];
+        if (!m->round[0]) continue; /* skip group stage */
+        if (!is_selected(m->home_code) && !is_selected(m->away_code)) continue;
+        int live = !strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
+                   !strcmp(m->status,"ET")||!strcmp(m->status,"PEN")||
+                   !strcmp(m->status,"HT");
+        if (!live) continue;
+        char hf[16],af[16],cl[16];
+        flag_for(m->home_code,hf); flag_for(m->away_code,af);
+        fmt_clock(m,cl,sizeof(cl));
+        snprintf(msgs[cnt],MSG_SZ,
+            "\xE2\x9A\xBD LIVE %s: %s%s %d\xE2\x80\x93%d %s%s | %s",
+            m->round, hf,m->home_code, m->home_score,
+            m->away_score, af,m->away_code, cl);
+        durs[cnt++]=dur;
+        if (m->last_event[0] && cnt<MAX_DISP_MSG) {
+            strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
+            durs[cnt++]=dur/2;
+        }
+    }
 
     /* ── Pass 1: live matches for selected teams (highest priority) ── */
     for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
@@ -1731,6 +1777,7 @@ static void handle_client(int fd) {
             cJSON_AddStringToObject(o,"group",m->group);
             cJSON_AddStringToObject(o,"kickoff",m->kickoff_iso);
             cJSON_AddStringToObject(o,"last_event",m->last_event);
+            cJSON_AddStringToObject(o,"round",m->round);
             cJSON_AddBoolToObject(o,"tracked",
                 is_selected(m->home_code)||is_selected(m->away_code));
             cJSON_AddItemToArray(marr,o);
@@ -1816,6 +1863,57 @@ static void handle_client(int fd) {
         pthread_mutex_unlock(&g_app.lock);
         char *js=cJSON_PrintUnformatted(root); cJSON_Delete(root);
         send_json(fd,200,js); free(js); return;
+    }
+
+    /* ── GET /bracket ── */
+    if (!strcmp(method,"GET") && ROUTE("/bracket")) {
+        /* Round display order */
+        static const char *ROUND_ORDER[] =
+            { "R32","R16","QF","SF","3rd Place","Final" };
+        static const int N_ROUNDS = 6;
+
+        pthread_mutex_lock(&g_app.lock);
+        cJSON *root = cJSON_CreateObject();
+        cJSON *rarr = cJSON_CreateArray();
+
+        for (int ri = 0; ri < N_ROUNDS; ri++) {
+            const char *rname = ROUND_ORDER[ri];
+            cJSON *marr = cJSON_CreateArray();
+            for (int i = 0; i < g_app.nmatches; i++) {
+                NMatch *m = &g_app.matches[i];
+                if (strcmp(m->round, rname) != 0) continue;
+                cJSON *o = cJSON_CreateObject();
+                char hf[16], af[16];
+                flag_for(m->home_code, hf); flag_for(m->away_code, af);
+                cJSON_AddNumberToObject(o,"id",           (double)m->id);
+                cJSON_AddStringToObject(o,"home_code",    m->home_code);
+                cJSON_AddStringToObject(o,"home_flag",    hf);
+                cJSON_AddNumberToObject(o,"home_score",   (double)m->home_score);
+                cJSON_AddStringToObject(o,"away_code",    m->away_code);
+                cJSON_AddStringToObject(o,"away_flag",    af);
+                cJSON_AddNumberToObject(o,"away_score",   (double)m->away_score);
+                cJSON_AddStringToObject(o,"status",       m->status);
+                cJSON_AddNumberToObject(o,"elapsed",      (double)m->elapsed);
+                cJSON_AddStringToObject(o,"round",        m->round);
+                cJSON_AddStringToObject(o,"kickoff",      m->kickoff_iso);
+                cJSON_AddStringToObject(o,"last_event",   m->last_event);
+                cJSON_AddBoolToObject(o,"tracked",
+                    is_selected(m->home_code)||is_selected(m->away_code));
+                cJSON_AddItemToArray(marr, o);
+            }
+            if (cJSON_GetArraySize(marr) > 0) {
+                cJSON *ro = cJSON_CreateObject();
+                cJSON_AddStringToObject(ro, "name",    rname);
+                cJSON_AddItemToObject(ro,   "matches", marr);
+                cJSON_AddItemToArray(rarr, ro);
+            } else {
+                cJSON_Delete(marr);
+            }
+        }
+        cJSON_AddItemToObject(root, "rounds", rarr);
+        pthread_mutex_unlock(&g_app.lock);
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        send_json(fd, 200, js ? js : "{}"); free(js); return;
     }
 
     /* ── GET /scorers ── */

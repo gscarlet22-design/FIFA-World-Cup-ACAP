@@ -12,12 +12,13 @@
     <div class="header">
         <div class="logo">&#127942;</div>
         <h1>FIFA World Cup 2026</h1>
-        <p class="subtitle">gscarlet22 design &mdash; v1.0.6</p>
+        <p class="subtitle">gscarlet22 design &mdash; v1.0.7</p>
     </div>
 
     <div class="tabs">
         <button class="tab active" data-tab="live">Live</button>
         <button class="tab" data-tab="standings">Standings</button>
+        <button class="tab" data-tab="bracket">Bracket</button>
         <button class="tab" data-tab="scorers">Golden Boot</button>
         <button class="tab" data-tab="config">Config</button>
         <button class="tab" data-tab="diag">&#128300; Diag</button>
@@ -54,6 +55,13 @@
     <div id="standings" class="panel">
         <p class="hint" style="margin-bottom:12px;">Tracked groups are highlighted. Select countries in Config to filter.</p>
         <div id="standings-grid"></div>
+    </div>
+
+    <!-- ── BRACKET Tab ───────────────────────────────────── -->
+    <div id="bracket" class="panel">
+        <h3 class="section-title">&#127942; Knockout Bracket</h3>
+        <p class="hint" style="margin-bottom:12px;">Knockout rounds. Tracked matches are highlighted.</p>
+        <div id="bracket-grid"></div>
     </div>
 
     <!-- ── GOLDEN BOOT Tab ────────────────────────────────── -->
