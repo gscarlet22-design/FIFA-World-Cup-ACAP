@@ -12,7 +12,7 @@
     <div class="header">
         <div class="logo">&#127942;</div>
         <h1>FIFA World Cup 2026</h1>
-        <p class="subtitle">gscarlet22 design &mdash; v1.0.0</p>
+        <p class="subtitle">gscarlet22 design &mdash; v1.0.3</p>
     </div>
 
     <div class="tabs">
@@ -167,6 +167,39 @@
 
         <hr class="divider">
 
+        <h3 class="section-title">&#127932; Audio Alerts</h3>
+        <p class="hint">
+            Goal sounds are streamed to the C1720/C1710 speaker via VAPIX transmit.cgi.
+            Volume is baked into the PCM data — the device output level is never changed.
+            Click <em>Upload Clips</em> once after installing the ACAP to store the bundled
+            MP3s on the device.
+        </p>
+        <div class="form-group toggle-row">
+            <label>Goal Sounds Enabled</label>
+            <label class="toggle"><input type="checkbox" id="audio-enabled" checked><span class="slider"></span></label>
+        </div>
+        <div class="form-group">
+            <label for="audio-volume">Volume: <span id="audio-volume-val">75</span>%</label>
+            <input type="range" id="audio-volume" min="0" max="100" value="75">
+        </div>
+        <div class="form-row">
+            <div class="form-group half">
+                <label for="goal-clip-id">Goal Clip ID</label>
+                <input type="number" id="goal-clip-id" min="1" max="99" value="1">
+            </div>
+            <div class="form-group half">
+                <label for="alert-clip-id">Alert Clip ID</label>
+                <input type="number" id="alert-clip-id" min="1" max="99" value="2">
+            </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button id="btn-upload-clips" class="btn btn-secondary" style="flex:1">&#128229; Upload Clips to Device</button>
+            <button id="btn-test-audio"   class="btn btn-secondary" style="flex:1">&#9654; Test Goal Sound</button>
+        </div>
+        <div id="audio-msg" class="save-msg"></div>
+
+        <hr class="divider">
+
         <button id="btn-save" class="btn btn-primary">Save Settings</button>
         <div id="save-msg" class="save-msg"></div>
     </div>
@@ -208,9 +241,21 @@
             <pre id="diag-display-out" class="diag-out"></pre>
         </div>
 
+        <!-- Audio test -->
+        <div class="diag-section">
+            <div class="diag-section-title">5 — Audio Pipeline</div>
+            <p class="hint">
+                Plays the Goal Clip at the configured volume using the full
+                transmit.cgi pipeline (MP3 decode → 8 kHz resample → perceptual
+                gain → µ-law stream). Requires clips uploaded to the device first.
+            </p>
+            <button class="btn btn-secondary btn-sm" id="diag-audio">Play Goal Sound</button>
+            <pre id="diag-audio-out" class="diag-out"></pre>
+        </div>
+
         <!-- Raw status dump -->
         <div class="diag-section">
-            <div class="diag-section-title">5 — Full Status Dump</div>
+            <div class="diag-section-title">6 — Full Status Dump</div>
             <p class="hint">Raw JSON from <code>/status</code> — useful for verifying parsed match data.</p>
             <button class="btn btn-secondary btn-sm" id="diag-dump">Dump /status JSON</button>
             <pre id="diag-dump-out" class="diag-out"></pre>
@@ -228,6 +273,8 @@
                 <tr><td>Display shows boxes/squares</td><td>Emoji not supported by firmware</td><td>Check C1720 firmware version; flag emojis require firmware &ge; 11.x</td></tr>
                 <tr><td>Build error: missing cJSON</td><td>cJSON download failed in Docker</td><td>Run <code>docker build --no-cache</code>; check internet connectivity</td></tr>
                 <tr><td>Build error: linker -laxparameter</td><td>Wrong SDK version</td><td>Change <code>VERSION=12.9.0</code> in Dockerfile to match your SDK</td></tr>
+                <tr><td>Goal sound silent</td><td>Clips not uploaded, or wrong ID</td><td>Click <em>Upload Clips to Device</em> in Config, then verify clip IDs match</td></tr>
+                <tr><td>Goal sound plays but wrong volume</td><td>Volume slider at 0 or clip at max device level</td><td>Set volume 50–80% in Config; device output gain is never touched</td></tr>
             </table>
         </div>
     </div>

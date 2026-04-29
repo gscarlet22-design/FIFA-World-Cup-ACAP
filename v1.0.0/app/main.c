@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.2  gscarlet22 design  (build retry)
+ * v1.0.3  gscarlet22 design  (Sprint 2: audio pipeline)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -28,13 +28,21 @@
 #include <curl/curl.h>
 #include "cJSON.h"
 #include <axsdk/axparameter.h>
+
+/* minimp3: single-header pure-C MP3 decoder — no new link deps.
+   minimp3_ex.h provides mp3dec_file_info_t / mp3dec_load_buf and
+   pulls in minimp3.h internally. */
+#define MINIMP3_IMPLEMENTATION
+#define MINIMP3_ONLY_MP3
+#include "minimp3_ex.h"
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.2"
+#define APP_VER         "1.0.3"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -50,6 +58,10 @@
 #define MOCK_DIR        "/usr/local/packages/fifa_wc/mock"
 #define DISP_API        "https://127.0.0.1/config/rest/speaker-display-notification/v1/simple"
 #define DISP_STOP       "https://127.0.0.1/config/rest/speaker-display-notification/v1/stop"
+#define MEDIACLIP_API   "http://127.0.0.1/axis-cgi/mediaclip.cgi?action=play&clip=%d"
+#define INSTALL_DIR     "/usr/local/packages/" APP_NAME "/"
+#define MAX_URL         512
+#define MAX_BUF         (512 * 1024)
 #define AF_BASE         "https://v3.football.api-sports.io"
 #define FD_BASE         "https://api.football-data.org/v4"
 
@@ -206,6 +218,10 @@ typedef struct {
     int  enabled;
     int  disp_enabled;
     int  demo_mode;
+    int  audio_enabled;     /* 0 = mute all goal sounds                  */
+    int  audio_volume;      /* 0–100, applied as perceptual gain curve   */
+    int  goal_clip_id;      /* mediaclip store ID for goal sound         */
+    int  alert_clip_id;     /* mediaclip store ID for halftime/KO sound  */
     char text_color[16];
     char bg_color[16];
     char text_size[16];
@@ -254,6 +270,21 @@ static size_t hbuf_cb(char *ptr, size_t sz, size_t nm, void *ud) {
     b->len += sz*nm;
     b->data[b->len] = '\0';
     return sz*nm;
+}
+
+/* Two-field buffer used by the audio curl helpers (matches MLB pattern) */
+typedef struct { char *data; size_t len; } CurlBuf;
+
+static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    CurlBuf *b = (CurlBuf *)userdata;
+    size_t total = size * nmemb;
+    char *tmp = realloc(b->data, b->len + total + 1);
+    if (!tmp) return 0;
+    b->data = tmp;
+    memcpy(b->data + b->len, ptr, total);
+    b->len += total;
+    b->data[b->len] = '\0';
+    return total;
 }
 
 static int http_get(const char *url,
@@ -900,6 +931,276 @@ static void rebuild_queue_locked(void) {
     pthread_mutex_unlock(&g_dlock);
 }
 
+/* ═══════════════════════ Audio Pipeline ════════════════════════
+ * Same approach proven in the MLB ACAP app:
+ *   1. download_clip()       — fetch MP3 from device mediaclip store
+ *   2. stream_scaled_clip()  — decode MP3 → resample → perceptual
+ *                              gain → µ-law → POST transmit.cgi
+ *   3. play_clip_ex()        — primary stream path + mediaclip fallback
+ *   4. play_clip()           — fire-and-forget wrapper
+ * Volume is NEVER set on the device output — it is baked into each
+ * PCM sample using gain = (vol/100)^1.7 before µ-law re-encode.
+ * ═══════════════════════════════════════════════════════════════*/
+
+static int16_t ulaw_decode(uint8_t u) {
+    u = ~u;
+    int sign      = (u & 0x80) ? -1 : 1;
+    int exponent  = (u >> 4) & 0x07;
+    int mantissa  =  u & 0x0F;
+    int magnitude = ((mantissa << 1) | 1) << exponent;
+    return (int16_t)(sign * (magnitude - 1));
+}
+
+static uint8_t ulaw_encode(int16_t s) {
+    int sign = (s >= 0) ? 0x80 : 0x00;
+    int v    = (s < 0) ? -(int)s : (int)s;
+    v += 33;
+    if (v > 0x1FFF) v = 0x1FFF;
+    int exp = 7;
+    for (int mask = 0x1000; (v & mask) == 0 && exp > 0; exp--, mask >>= 1);
+    int mant = (v >> (exp + 1)) & 0x0F;
+    return (uint8_t)(~(sign | (exp << 4) | mant));
+}
+
+/* Returns byte offset to audio data, or -1 on error.
+   Sets *encoding (1 = µ-law), *sample_rate, *channels. */
+static int au_parse_header(const uint8_t *d, size_t len,
+                            uint32_t *encoding, uint32_t *sample_rate,
+                            uint32_t *channels) {
+    if (len < 24) return -1;
+    uint32_t magic  = ((uint32_t)d[0]<<24)|((uint32_t)d[1]<<16)|
+                      ((uint32_t)d[2]<<8)|d[3];
+    if (magic != 0x2E736E64u) return -1;   /* ".snd" */
+    uint32_t offset = ((uint32_t)d[4]<<24)|((uint32_t)d[5]<<16)|
+                      ((uint32_t)d[6]<<8)|d[7];
+    if (encoding)    *encoding    = ((uint32_t)d[12]<<24)|((uint32_t)d[13]<<16)|
+                                    ((uint32_t)d[14]<<8)|d[15];
+    if (sample_rate) *sample_rate = ((uint32_t)d[16]<<24)|((uint32_t)d[17]<<16)|
+                                    ((uint32_t)d[18]<<8)|d[19];
+    if (channels)    *channels    = ((uint32_t)d[20]<<24)|((uint32_t)d[21]<<16)|
+                                    ((uint32_t)d[22]<<8)|d[23];
+    return (offset < len) ? (int)offset : -1;
+}
+
+/* Returns 1 if buffer starts with an MP3 sync word or ID3v2 tag. */
+static int is_mp3(const uint8_t *d, size_t len) {
+    if (len < 3) return 0;
+    if (d[0] == 0x49 && d[1] == 0x44 && d[2] == 0x33) return 1; /* ID3v2 */
+    if (d[0] == 0xFF && len >= 2) {
+        uint8_t b = d[1];
+        if ((b & 0xE0) == 0xE0 && (b & 0x06) == 0x02) return 1; /* MPEG sync */
+    }
+    return 0;
+}
+
+/* Resample interleaved int16 PCM src_rate→dst_rate with stereo→mono downmix.
+   Returns a malloc'd mono buffer (*dst_frames_out samples). */
+static int16_t *resample_to_mono(const int16_t *src, int channels,
+                                  int src_frames, int src_rate, int dst_rate,
+                                  int *dst_frames_out) {
+    *dst_frames_out = (int)((int64_t)src_frames * dst_rate / src_rate);
+    if (*dst_frames_out <= 0) return NULL;
+    int16_t *out = malloc((size_t)(*dst_frames_out) * sizeof(int16_t));
+    if (!out) return NULL;
+    double ratio = (double)src_frames / (double)(*dst_frames_out);
+    for (int i = 0; i < *dst_frames_out; i++) {
+        double pos  = i * ratio;
+        int    lo   = (int)pos;
+        int    hi   = lo + 1 < src_frames ? lo + 1 : lo;
+        double frac = pos - lo;
+        double s_lo = 0.0, s_hi = 0.0;
+        for (int ch = 0; ch < channels; ch++) {
+            s_lo += src[lo * channels + ch];
+            s_hi += src[hi * channels + ch];
+        }
+        double v = (s_lo + frac * (s_hi - s_lo)) / channels;
+        if (v >  32767.0) v =  32767.0;
+        if (v < -32768.0) v = -32768.0;
+        out[i] = (int16_t)v;
+    }
+    return out;
+}
+
+/* Download a stored clip from the device mediaclip store. */
+static int download_clip(int clip_id, uint8_t **out, size_t *out_len) {
+    char url[MAX_URL], cred[128];
+    snprintf(url,  sizeof(url),
+        "http://127.0.0.1/axis-cgi/mediaclip.cgi?action=download&clip=%d", clip_id);
+    snprintf(cred, sizeof(cred), "%s:%s", g_app.dev_user, g_app.dev_pass);
+
+    CURL *c = curl_easy_init();
+    if (!c) return 0;
+    CurlBuf buf = {NULL, 0};
+    curl_easy_setopt(c, CURLOPT_URL,           url);
+    curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
+    curl_easy_setopt(c, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,     &buf);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT,       10L);
+    CURLcode rc = curl_easy_perform(c);
+    long http_code = -1;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(c);
+
+    if (rc != CURLE_OK || http_code != 200 || !buf.data || buf.len < 4) {
+        LOG("download_clip id=%d failed http=%ld rc=%d len=%zu",
+            clip_id, http_code, (int)rc, buf.len);
+        free(buf.data);
+        return 0;
+    }
+    *out     = (uint8_t *)buf.data;
+    *out_len = buf.len;
+    return 1;
+}
+
+/* Download, volume-scale, and stream a clip via transmit.cgi.
+   Handles both MP3 (minimp3) and µ-law .au.  Returns 1 on success. */
+static int stream_scaled_clip(int clip_id, int volume_pct) {
+    uint8_t *raw = NULL; size_t raw_len = 0;
+    if (!download_clip(clip_id, &raw, &raw_len)) return 0;
+
+    uint8_t *scaled = NULL; size_t n = 0;
+    /* Perceptual gain: gain = (vol/100)^1.7
+     *   50% → ≈0.31 (−10 dB, perceptually half as loud as max)
+     *  100% → 1.0   (full volume) */
+    float _v   = (float)volume_pct / 100.0f;
+    float gain = (_v <= 0.0f) ? 0.0f : powf(_v, 1.7f);
+
+    if (is_mp3(raw, raw_len)) {
+        /* MP3 path: decode → resample → scale → µ-law */
+        mp3dec_t           dec;
+        mp3dec_file_info_t info;
+        mp3dec_init(&dec);
+        int err = mp3dec_load_buf(&dec, raw, raw_len, &info, NULL, NULL);
+        free(raw);
+        if (err || !info.buffer || info.samples == 0) {
+            LOG("stream_scaled_clip: mp3 decode failed err=%d", err);
+            free(info.buffer);
+            return 0;
+        }
+        int src_frames = (int)(info.samples / (size_t)info.channels);
+        int dst_frames = 0;
+        int16_t *mono8k = resample_to_mono(info.buffer, info.channels,
+                                           src_frames, info.hz, 8000,
+                                           &dst_frames);
+        free(info.buffer);
+        if (!mono8k || dst_frames == 0) { free(mono8k); return 0; }
+        n      = (size_t)dst_frames;
+        scaled = malloc(n);
+        if (!scaled) { free(mono8k); return 0; }
+        for (int i = 0; i < dst_frames; i++) {
+            int32_t s = (int32_t)((float)mono8k[i] * gain);
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            scaled[i] = ulaw_encode((int16_t)s);
+        }
+        free(mono8k);
+    } else {
+        /* .au µ-law path */
+        uint32_t encoding = 0, sample_rate = 8000, channels = 1;
+        int data_off = au_parse_header(raw, raw_len,
+                                       &encoding, &sample_rate, &channels);
+        if (data_off < 0 || encoding != 1) {
+            LOG("stream_scaled_clip: unsupported format (not mp3 or ulaw .au)");
+            free(raw); return 0;
+        }
+        const uint8_t *src = raw + data_off;
+        n      = raw_len - (size_t)data_off;
+        scaled = malloc(n);
+        if (!scaled) { free(raw); return 0; }
+        for (size_t i = 0; i < n; i++) {
+            int32_t s = (int32_t)((float)ulaw_decode(src[i]) * gain);
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            scaled[i] = ulaw_encode((int16_t)s);
+        }
+        free(raw);
+    }
+
+    /* Stream scaled µ-law to transmit.cgi as audio/basic */
+    char cred[128];
+    snprintf(cred, sizeof(cred), "%s:%s", g_app.dev_user, g_app.dev_pass);
+
+    struct curl_slist *hdrs = curl_slist_append(NULL, "Content-Type: audio/basic");
+    CURL *c = curl_easy_init();
+    if (!c) { free(scaled); curl_slist_free_all(hdrs); return 0; }
+
+    CurlBuf resp = {NULL, 0};
+    curl_easy_setopt(c, CURLOPT_URL,           "http://127.0.0.1/axis-cgi/audio/transmit.cgi");
+    curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
+    curl_easy_setopt(c, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER,    hdrs);
+    curl_easy_setopt(c, CURLOPT_POSTFIELDS,    (char *)scaled);
+    curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)n);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,     &resp);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT,       30L);
+
+    CURLcode rc = curl_easy_perform(c);
+    long http_code = -1;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+    LOG("stream_scaled_clip id=%d vol=%d%% n=%zu http=%ld rc=%d resp=%s",
+        clip_id, volume_pct, n, http_code, (int)rc,
+        resp.data ? resp.data : "(none)");
+    free(resp.data);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(c);
+    free(scaled);
+    return (rc == CURLE_OK && http_code >= 200 && http_code < 300) ? 1 : 0;
+}
+
+/* Primary: stream scaled clip via transmit.cgi.
+   Fallback: unscaled play via mediaclip.cgi.
+   Device output gain is never modified. */
+static long play_clip_ex(int clip_id, char *resp_out, size_t resp_sz) {
+    int vol = g_app.audio_volume;
+    if (vol < 0)   vol = 0;
+    if (vol > 100) vol = 100;
+
+    if (stream_scaled_clip(clip_id, vol)) {
+        if (resp_out) snprintf(resp_out, resp_sz,
+            "streamed clip=%d vol=%d%% via transmit.cgi", clip_id, vol);
+        return 200;
+    }
+
+    /* Fallback: play via mediaclip.cgi (no volume control) */
+    LOG("play_clip_ex: stream failed, falling back to mediaclip play id=%d", clip_id);
+    char url[MAX_URL], cred[128];
+    snprintf(url,  sizeof(url),  MEDIACLIP_API, clip_id);
+    snprintf(cred, sizeof(cred), "%s:%s", g_app.dev_user, g_app.dev_pass);
+
+    CURL *c = curl_easy_init();
+    if (!c) {
+        if (resp_out) snprintf(resp_out, resp_sz, "curl_easy_init failed");
+        return -1;
+    }
+    CurlBuf buf = {NULL, 0};
+    curl_easy_setopt(c, CURLOPT_URL,           url);
+    curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
+    curl_easy_setopt(c, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,     &buf);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT,       5L);
+    CURLcode rc = curl_easy_perform(c);
+    long http_code = -1;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(c);
+    if (rc != CURLE_OK) {
+        LOG("play_clip fallback error: %s", curl_easy_strerror(rc));
+        if (resp_out) snprintf(resp_out, resp_sz,
+            "fallback curl error: %s", curl_easy_strerror(rc));
+    } else {
+        LOG("play_clip fallback id=%d http=%ld", clip_id, http_code);
+        if (resp_out) snprintf(resp_out, resp_sz,
+            "fallback http=%ld body=%s",
+            http_code, buf.data ? buf.data : "(empty)");
+    }
+    free(buf.data);
+    return (rc == CURLE_OK) ? http_code : -1;
+}
+
+static void play_clip(int clip_id) { play_clip_ex(clip_id, NULL, 0); }
+
 /* ── VAPIX display ────────────────────────────────────────────── */
 /* Returns the HTTP status code (200 = success), -1 on curl error.
  * If resp_out/resp_sz are non-NULL the raw API response is written there. */
@@ -1023,6 +1324,31 @@ static void do_fetch(void) {
     free(jbuf);
 
     pthread_mutex_lock(&g_app.lock);
+
+    /* ── Goal detection for audio alerts ── */
+    int goal_scored = 0;
+    int goal_clip   = g_app.goal_clip_id;
+    if (g_app.audio_enabled && g_app.audio_volume > 0 && nm > 0 && goal_clip > 0) {
+        for (int i = 0; i < nm; i++) {
+            /* Only tracked teams trigger audio */
+            if (!is_selected(tm[i].home_code) && !is_selected(tm[i].away_code))
+                continue;
+            /* Only during live play (not HT, FT, NS) */
+            if (strcmp(tm[i].status,"1H")!=0 && strcmp(tm[i].status,"2H")!=0 &&
+                strcmp(tm[i].status,"ET")!=0 && strcmp(tm[i].status,"PEN")!=0)
+                continue;
+            /* Compare against previous cached score */
+            for (int p = 0; p < g_app.nmatches; p++) {
+                if (g_app.matches[p].id == tm[i].id) {
+                    if (tm[i].home_score > g_app.matches[p].home_score ||
+                        tm[i].away_score > g_app.matches[p].away_score)
+                        goal_scored = 1;
+                    break;
+                }
+            }
+        }
+    }
+
     if (nm>0||src!=SRC_NONE) {
         memcpy(g_app.matches,tm,nm*sizeof(NMatch));
         g_app.nmatches=nm;
@@ -1041,6 +1367,12 @@ static void do_fetch(void) {
     else if (cs!=SRC_NONE) g_app.last_src=cs;
     rebuild_queue_locked();
     pthread_mutex_unlock(&g_app.lock);
+
+    /* Play goal sound outside the lock (curl calls must not hold g_app.lock) */
+    if (goal_scored) {
+        LOG("GOAL detected for tracked team — playing clip %d", goal_clip);
+        play_clip(goal_clip);
+    }
 }
 
 /* ── Poll thread ──────────────────────────────────────────────── */
@@ -1261,6 +1593,10 @@ static void handle_client(int fd) {
         cJSON_AddBoolToObject(root,"enabled",g_app.enabled);
         cJSON_AddBoolToObject(root,"display_enabled",g_app.disp_enabled);
         cJSON_AddBoolToObject(root,"demo_mode",g_app.demo_mode);
+        cJSON_AddBoolToObject(root,"audio_enabled",g_app.audio_enabled);
+        cJSON_AddNumberToObject(root,"audio_volume",g_app.audio_volume);
+        cJSON_AddNumberToObject(root,"goal_clip_id",g_app.goal_clip_id);
+        cJSON_AddNumberToObject(root,"alert_clip_id",g_app.alert_clip_id);
         cJSON_AddStringToObject(root,"text_color",g_app.text_color);
         cJSON_AddStringToObject(root,"bg_color",g_app.bg_color);
         cJSON_AddStringToObject(root,"text_size",g_app.text_size);
@@ -1310,12 +1646,18 @@ static void handle_client(int fd) {
         STR_FIELD("text_color", g_app.text_color,16);
         STR_FIELD("bg_color",   g_app.bg_color,  16);
         STR_FIELD("text_size",  g_app.text_size, 16);
-        BOOL_FIELD("enabled",      g_app.enabled);
+        BOOL_FIELD("enabled",        g_app.enabled);
         BOOL_FIELD("display_enabled",g_app.disp_enabled);
-        BOOL_FIELD("demo_mode",   g_app.demo_mode);
+        BOOL_FIELD("demo_mode",      g_app.demo_mode);
+        BOOL_FIELD("audio_enabled",  g_app.audio_enabled);
         NUM_FIELD("poll_interval_sec",g_app.poll_sec);
-        NUM_FIELD("scroll_speed", g_app.scroll_speed);
-        NUM_FIELD("duration_ms",  g_app.duration_ms);
+        NUM_FIELD("scroll_speed",    g_app.scroll_speed);
+        NUM_FIELD("duration_ms",     g_app.duration_ms);
+        NUM_FIELD("audio_volume",    g_app.audio_volume);
+        NUM_FIELD("goal_clip_id",    g_app.goal_clip_id);
+        NUM_FIELD("alert_clip_id",   g_app.alert_clip_id);
+        if (g_app.audio_volume < 0)   g_app.audio_volume = 0;
+        if (g_app.audio_volume > 100) g_app.audio_volume = 100;
 #undef STR_FIELD
 #undef BOOL_FIELD
 #undef NUM_FIELD
@@ -1330,14 +1672,18 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(cfg,"device_user",g_app.dev_user);
         cJSON_AddStringToObject(cfg,"device_pass",g_app.dev_pass);
         cJSON_AddNumberToObject(cfg,"poll_interval_sec",g_app.poll_sec);
-        cJSON_AddBoolToObject(cfg,"enabled",       g_app.enabled);
+        cJSON_AddBoolToObject(cfg,"enabled",        g_app.enabled);
         cJSON_AddBoolToObject(cfg,"display_enabled",g_app.disp_enabled);
-        cJSON_AddBoolToObject(cfg,"demo_mode",     g_app.demo_mode);
-        cJSON_AddStringToObject(cfg,"text_color",  g_app.text_color);
-        cJSON_AddStringToObject(cfg,"bg_color",    g_app.bg_color);
-        cJSON_AddStringToObject(cfg,"text_size",   g_app.text_size);
-        cJSON_AddNumberToObject(cfg,"scroll_speed",g_app.scroll_speed);
-        cJSON_AddNumberToObject(cfg,"duration_ms", g_app.duration_ms);
+        cJSON_AddBoolToObject(cfg,"demo_mode",      g_app.demo_mode);
+        cJSON_AddBoolToObject(cfg,"audio_enabled",  g_app.audio_enabled);
+        cJSON_AddNumberToObject(cfg,"audio_volume",  g_app.audio_volume);
+        cJSON_AddNumberToObject(cfg,"goal_clip_id",  g_app.goal_clip_id);
+        cJSON_AddNumberToObject(cfg,"alert_clip_id", g_app.alert_clip_id);
+        cJSON_AddStringToObject(cfg,"text_color",   g_app.text_color);
+        cJSON_AddStringToObject(cfg,"bg_color",     g_app.bg_color);
+        cJSON_AddStringToObject(cfg,"text_size",    g_app.text_size);
+        cJSON_AddNumberToObject(cfg,"scroll_speed", g_app.scroll_speed);
+        cJSON_AddNumberToObject(cfg,"duration_ms",  g_app.duration_ms);
         char *cs=cJSON_PrintUnformatted(cfg); cJSON_Delete(cfg);
         int save_ok=0;
         if(g_app.axp) {
@@ -1383,6 +1729,170 @@ static void handle_client(int fd) {
         send_json(fd,200,"{\"message\":\"Refresh queued\"}"); return;
     }
 
+    /* ── POST /upload_clips ── */
+    /* Uploads the bundled default audio clips to the device mediaclip store.
+       Files land at INSTALL_DIR "audio/" after ACAP install. */
+    if (!strcmp(method,"POST") && ROUTE("/upload_clips")) {
+        static const struct { const char *file; const char *name; } BUNDLED[] = {
+            { INSTALL_DIR "audio/goal_cheer.mp3", "FIFA WC Goal Cheer"  },
+            { INSTALL_DIR "audio/goal_horn.mp3",  "FIFA WC Goal Horn"   },
+        };
+        int nb = (int)(sizeof(BUNDLED) / sizeof(BUNDLED[0]));
+
+        pthread_mutex_lock(&g_app.lock);
+        char user[64], pass[64];
+        strncpy(user, g_app.dev_user, sizeof(user)-1); user[63]='\0';
+        strncpy(pass, g_app.dev_pass, sizeof(pass)-1); pass[63]='\0';
+        pthread_mutex_unlock(&g_app.lock);
+
+        char cred[128];
+        snprintf(cred, sizeof(cred), "%s:%s", user, pass);
+
+        cJSON *clips_out = cJSON_CreateArray();
+        for (int ci = 0; ci < nb; ci++) {
+            int file_ok = (access(BUNDLED[ci].file, R_OK) == 0);
+            LOG("upload_clips: file=%s exists=%s", BUNDLED[ci].file, file_ok?"yes":"no");
+
+            cJSON *r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "name",      BUNDLED[ci].name);
+            cJSON_AddStringToObject(r, "file_path", BUNDLED[ci].file);
+            cJSON_AddStringToObject(r, "file_exists", file_ok ? "yes" : "no");
+
+            if (!file_ok) {
+                cJSON_AddNumberToObject(r, "http_code", -1);
+                cJSON_AddStringToObject(r, "response",  "file not found on device");
+                cJSON_AddItemToArray(clips_out, r);
+                continue;
+            }
+
+            CURL *uc = curl_easy_init();
+            char upload_url[512];
+            char *enc_name = curl_easy_escape(uc, BUNDLED[ci].name, 0);
+            snprintf(upload_url, sizeof(upload_url),
+                     "http://127.0.0.1/axis-cgi/mediaclip.cgi?action=upload&name=%s",
+                     enc_name ? enc_name : "");
+            curl_free(enc_name);
+
+            curl_mime     *mime = curl_mime_init(uc);
+            curl_mimepart *part = curl_mime_addpart(mime);
+            curl_mime_name(part, "clip");
+            curl_mime_filedata(part, BUNDLED[ci].file);
+            curl_mime_type(part, "audio/mpeg");
+
+            CurlBuf resp = {NULL, 0};
+            curl_easy_setopt(uc, CURLOPT_URL,           upload_url);
+            curl_easy_setopt(uc, CURLOPT_USERPWD,       cred);
+            curl_easy_setopt(uc, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
+            curl_easy_setopt(uc, CURLOPT_MIMEPOST,      mime);
+            curl_easy_setopt(uc, CURLOPT_WRITEFUNCTION, curl_write_cb);
+            curl_easy_setopt(uc, CURLOPT_WRITEDATA,     &resp);
+            curl_easy_setopt(uc, CURLOPT_TIMEOUT,       30L);
+
+            CURLcode rc = curl_easy_perform(uc);
+            long http_code = -1;
+            curl_easy_getinfo(uc, CURLINFO_RESPONSE_CODE, &http_code);
+            curl_easy_cleanup(uc);
+            curl_mime_free(mime);
+
+            LOG("upload_clips: %s http=%ld rc=%d resp=%s",
+                BUNDLED[ci].name, http_code, (int)rc,
+                resp.data ? resp.data : "(none)");
+
+            cJSON_AddNumberToObject(r, "http_code",  (double)http_code);
+            cJSON_AddNumberToObject(r, "curl_code",  (double)rc);
+            cJSON_AddStringToObject(r, "curl_error", curl_easy_strerror(rc));
+            cJSON_AddStringToObject(r, "response",   resp.data ? resp.data : "(none)");
+            cJSON_AddItemToArray(clips_out, r);
+            free(resp.data);
+        }
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddItemToObject(root, "clips", clips_out);
+        char *out_str = cJSON_PrintUnformatted(root);
+        send_json(fd, 200, out_str ? out_str : "{}");
+        free(out_str);
+        cJSON_Delete(root);
+        return;
+    }
+
+    /* ── GET /clips ── */
+    /* Lists clips currently in the device mediaclip store (raw XML proxied). */
+    if (!strcmp(method,"GET") && ROUTE("/clips")) {
+        pthread_mutex_lock(&g_app.lock);
+        char user[64], pass[64];
+        strncpy(user, g_app.dev_user, sizeof(user)-1); user[63]='\0';
+        strncpy(pass, g_app.dev_pass, sizeof(pass)-1); pass[63]='\0';
+        pthread_mutex_unlock(&g_app.lock);
+
+        char cred[128];
+        snprintf(cred, sizeof(cred), "%s:%s", user, pass);
+
+        CURL *c = curl_easy_init();
+        CurlBuf buf = {NULL, 0};
+        curl_easy_setopt(c, CURLOPT_URL,
+            "http://127.0.0.1/axis-cgi/mediaclip.cgi?action=list");
+        curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
+        curl_easy_setopt(c, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA,     &buf);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT,       8L);
+        CURLcode rc = curl_easy_perform(c);
+        long http_code = -1;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_easy_cleanup(c);
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddNumberToObject(root, "http_code", (double)http_code);
+        cJSON_AddNumberToObject(root, "curl_code", (double)rc);
+        cJSON_AddStringToObject(root, "body", buf.data ? buf.data : "");
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        free(buf.data);
+        send_json(fd, 200, js ? js : "{}"); free(js); return;
+    }
+
+    /* ── POST /test_audio ── */
+    /* Plays the goal clip at the configured volume.  Body (optional):
+       {"clip_id": N, "volume": V}  — overrides clip and/or volume for the test. */
+    if (!strcmp(method,"POST") && ROUTE("/test_audio")) {
+        char body[512]; read_body(fd, req, body, sizeof(body));
+        cJSON *j = cJSON_Parse(body);
+
+        pthread_mutex_lock(&g_app.lock);
+        int clip_id = g_app.goal_clip_id;
+        int vol     = g_app.audio_volume;
+        pthread_mutex_unlock(&g_app.lock);
+
+        if (j) {
+            cJSON *ci = cJSON_GetObjectItem(j, "clip_id");
+            cJSON *vl = cJSON_GetObjectItem(j, "volume");
+            if (cJSON_IsNumber(ci)) clip_id = (int)ci->valuedouble;
+            if (cJSON_IsNumber(vl)) {
+                vol = (int)vl->valuedouble;
+                if (vol < 0)   vol = 0;
+                if (vol > 100) vol = 100;
+            }
+            cJSON_Delete(j);
+        }
+
+        if (clip_id <= 0) {
+            send_json(fd, 400,
+                "{\"message\":\"No clip configured — run Upload Clips first\"}");
+            return;
+        }
+
+        char clip_resp[512] = "";
+        long clip_http = play_clip_ex(clip_id, clip_resp, sizeof(clip_resp));
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "message",   "ok");
+        cJSON_AddNumberToObject(root, "clip_id",   (double)clip_id);
+        cJSON_AddNumberToObject(root, "volume",    (double)vol);
+        cJSON_AddNumberToObject(root, "clip_http", (double)clip_http);
+        cJSON_AddStringToObject(root, "clip_resp", clip_resp);
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        send_json(fd, 200, js ? js : "{}"); free(js); return;
+    }
+
     LOG("404 method=%s path=%s",method,path);
     send_json(fd,404,"{\"message\":\"Not found\"}");
 }
@@ -1413,6 +1923,8 @@ static void load_config(void) {
     g_app.disp_enabled=1; g_app.demo_mode=1;
     strcpy(g_app.text_color,"#FFFFFF"); strcpy(g_app.bg_color,"#003F7F");
     strcpy(g_app.text_size,"large"); g_app.scroll_speed=3; g_app.duration_ms=15000;
+    g_app.audio_enabled=1; g_app.audio_volume=75;
+    g_app.goal_clip_id=1;  g_app.alert_clip_id=2;
 
     if (!g_app.axp) return;
     GError *err=NULL; gchar *val=NULL;
@@ -1445,9 +1957,13 @@ static void load_config(void) {
     LB("enabled",        g_app.enabled);
     LB("display_enabled",g_app.disp_enabled);
     LB("demo_mode",      g_app.demo_mode);
+    LB("audio_enabled",  g_app.audio_enabled);
     LN("poll_interval_sec",g_app.poll_sec);
     LN("scroll_speed",   g_app.scroll_speed);
     LN("duration_ms",    g_app.duration_ms);
+    LN("audio_volume",   g_app.audio_volume);
+    LN("goal_clip_id",   g_app.goal_clip_id);
+    LN("alert_clip_id",  g_app.alert_clip_id);
 #undef LS
 #undef LB
 #undef LN

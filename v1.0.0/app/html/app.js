@@ -266,6 +266,9 @@
     document.getElementById('scroll-speed').addEventListener('input', function () {
         document.getElementById('scroll-speed-val').textContent = this.value;
     });
+    document.getElementById('audio-volume').addEventListener('input', function () {
+        document.getElementById('audio-volume-val').textContent = this.value;
+    });
 
     function loadConfig() {
         api('/config').then(function (r) { return r.json(); }).then(function (d) {
@@ -280,6 +283,11 @@
             document.getElementById('scroll-speed').value   = String(d.scroll_speed || 3);
             document.getElementById('scroll-speed-val').textContent = String(d.scroll_speed || 3);
             document.getElementById('duration-sec').value  = String(Math.round((d.duration_ms||15000)/1000));
+            document.getElementById('audio-enabled').checked = (d.audio_enabled !== false);
+            document.getElementById('audio-volume').value    = String(d.audio_volume != null ? d.audio_volume : 75);
+            document.getElementById('audio-volume-val').textContent = String(d.audio_volume != null ? d.audio_volume : 75);
+            document.getElementById('goal-clip-id').value   = String(d.goal_clip_id  || 1);
+            document.getElementById('alert-clip-id').value  = String(d.alert_clip_id || 2);
 
             /* Rebuild selection from config */
             selectedCodes = {};
@@ -315,6 +323,10 @@
             text_size:         document.getElementById('text-size').value,
             scroll_speed:      parseInt(document.getElementById('scroll-speed').value, 10),
             duration_ms:       parseInt(document.getElementById('duration-sec').value, 10) * 1000,
+            audio_enabled:     document.getElementById('audio-enabled').checked,
+            audio_volume:      parseInt(document.getElementById('audio-volume').value, 10),
+            goal_clip_id:      parseInt(document.getElementById('goal-clip-id').value, 10),
+            alert_clip_id:     parseInt(document.getElementById('alert-clip-id').value, 10),
         };
         var afKey = document.getElementById('af-key').value.trim();
         var fdKey = document.getElementById('fd-key').value.trim();
@@ -343,6 +355,49 @@
             .then(function (r) { return r.json(); })
             .then(function (d) { showMsg(d.message || 'Sent'); })
             .catch(function () { showMsg('Display test failed', false); });
+    });
+
+    function showAudioMsg(txt, ok) {
+        var el = document.getElementById('audio-msg');
+        el.textContent = txt;
+        el.className = 'save-msg ' + (ok === false ? 'error' : '');
+        setTimeout(function () { el.textContent = ''; el.className = 'save-msg'; }, 5000);
+    }
+
+    document.getElementById('btn-upload-clips').addEventListener('click', function () {
+        showAudioMsg('Uploading clips to device\u2026');
+        api('/upload_clips', { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var clips = d.clips || [];
+                var lines = clips.map(function (c) {
+                    var ok = (c.http_code >= 200 && c.http_code < 300);
+                    return (ok ? '\u2713' : '\u2717') + ' ' + c.name
+                        + ' \u2192 HTTP ' + c.http_code
+                        + (c.response ? ' | ' + c.response : '')
+                        + (c.file_exists === 'no' ? ' [FILE NOT FOUND]' : '');
+                });
+                var allOk = clips.every(function (c) {
+                    return c.http_code >= 200 && c.http_code < 300;
+                });
+                showAudioMsg(lines.join('\n') || 'Done', allOk);
+            })
+            .catch(function (e) { showAudioMsg('Upload failed: ' + e, false); });
+    });
+
+    document.getElementById('btn-test-audio').addEventListener('click', function () {
+        showAudioMsg('Playing goal sound\u2026');
+        api('/test_audio', { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var ok = (d.clip_http >= 200 && d.clip_http < 300);
+                showAudioMsg(
+                    (ok ? '\u2713' : '\u2717') +
+                    ' clip=' + d.clip_id +
+                    ' vol=' + d.volume + '% HTTP ' + d.clip_http +
+                    (d.clip_resp ? '\n' + d.clip_resp : ''), ok);
+            })
+            .catch(function (e) { showAudioMsg('Audio test failed: ' + e, false); });
     });
 
     /* ── Diagnostics Tab ──────────────────────────────────── */
@@ -448,7 +503,29 @@
         });
     });
 
-    /* 5 — Full dump */
+    /* 5 — Audio pipeline */
+    document.getElementById('diag-audio').addEventListener('click', function () {
+        diagRun('diag-audio', 'diag-audio-out', function (done) {
+            api('/test_audio', { method: 'POST' })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    var ok = (d.clip_http >= 200 && d.clip_http < 300);
+                    done((ok ? '\u2713' : '\u2717') +
+                        ' clip=' + d.clip_id +
+                        ' vol=' + d.volume + '% HTTP ' + d.clip_http +
+                        (d.clip_resp ? '\n' + d.clip_resp : '') +
+                        (ok ? '' :
+                            '\n\nIf no sound:\n' +
+                            '  \u2022 Run "Upload Clips to Device" in Config first\n' +
+                            '  \u2022 Verify device credentials in Config\n' +
+                            '  \u2022 Goal Clip ID in Config matches the uploaded clip\n' +
+                            '  \u2022 Volume > 0 in Config'), ok);
+                })
+                .catch(function (e) { done('\u2717 ' + e, false); });
+        });
+    });
+
+    /* 6 — Full dump */
     document.getElementById('diag-dump').addEventListener('click', function () {
         diagRun('diag-dump', 'diag-dump-out', function (done) {
             api('/status')
