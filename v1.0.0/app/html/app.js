@@ -91,8 +91,15 @@
                 : '<span class="mc-score muted">&mdash;</span>'
                   + '<span class="mc-sep">vs</span>'
                   + '<span class="mc-score muted">&mdash;</span>';
-            var eventHtml = m.last_event
-                ? '<div class="mc-event">' + esc(m.last_event) + '</div>' : '';
+            var eventHtml = '';
+            if (m.last_event) {
+                var evText = esc(m.last_event);
+                /* Bold the scorer name: "⚽ GOAL 58' Pulisic (USA)" → bold "Pulisic" */
+                evText = evText.replace(/(\d+(?:\+\d+)?') ([^(]+) \(/, function (_, min, name) {
+                    return min + ' <strong>' + name.trim() + '</strong> (';
+                });
+                eventHtml = '<div class="mc-event">' + evText + '</div>';
+            }
             var koHtml = (!live && !ft && m.kickoff)
                 ? '<div class="mc-kickoff">' + esc(m.kickoff.replace('T',' ').replace('Z',' UTC').substring(0,19)) + '</div>' : '';
             return '<div class="' + cls + tracked + '">'

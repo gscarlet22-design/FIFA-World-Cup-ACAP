@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.5  gscarlet22 design  (Sprint 3: goal strobe + team colors)
+ * v1.0.6  gscarlet22 design  (Sprint 4: goal scorer event parsing)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.5"
+#define APP_VER         "1.0.6"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -485,30 +485,58 @@ static int af_parse_fixtures(const char *json,
         m->home_score=(cJSON_IsNumber(hg)&&!cJSON_IsNull(hg))?(int)hg->valuedouble:0;
         m->away_score=(cJSON_IsNumber(ag)&&!cJSON_IsNull(ag))?(int)ag->valuedouble:0;
 
-        /* last event */
-        if (cJSON_IsArray(evts) && cJSON_GetArraySize(evts)>0) {
+        /* last event — scan for most recent goal; fall back to last red card */
+        if (cJSON_IsArray(evts)) {
             int ne = cJSON_GetArraySize(evts);
-            cJSON *last = cJSON_GetArrayItem(evts, ne-1);
-            cJSON *etype = cJSON_GetObjectItem(last,"type");
-            cJSON *edet  = cJSON_GetObjectItem(last,"detail");
-            cJSON *etime = cJSON_GetObjectItem(last,"time");
-            cJSON *eel   = cJSON_GetObjectItem(etime,"elapsed");
-            cJSON *epl   = cJSON_GetObjectItem(last,"player");
-            cJSON *epln  = cJSON_GetObjectItem(epl,"name");
-            cJSON *etm   = cJSON_GetObjectItem(last,"team");
-            cJSON *etmn  = cJSON_GetObjectItem(etm,"name");
-            int emin = cJSON_IsNumber(eel)?(int)eel->valuedouble:0;
-            const char *tp = cJSON_IsString(etype)?etype->valuestring:"";
-            const char *pn = cJSON_IsString(epln)?epln->valuestring:"";
-            const char *tn = cJSON_IsString(etmn)?etmn->valuestring:"";
-            int ti = team_by_name(tn);
-            char tc[4]="?"; if(ti>=0) strncpy(tc,TEAMS[ti].code,3);
-            if (strcmp(tp,"Goal")==0)
-                snprintf(m->last_event,127,"\xE2\x9A\xBD GOAL %d' %s (%s)",emin,pn,tc);
-            else if (strcmp(tp,"Card")==0 && cJSON_IsString(edet) &&
-                     strstr(edet->valuestring,"Red"))
-                snprintf(m->last_event,127,
-                    "\xF0\x9F\x9F\xA5 RED CARD %d' %s (%s)",emin,pn,tc);
+            int best_goal_min = -1;
+            cJSON *best_goal = NULL, *last_red = NULL;
+            for (int ei = 0; ei < ne; ei++) {
+                cJSON *ev   = cJSON_GetArrayItem(evts, ei);
+                cJSON *etp  = cJSON_GetObjectItem(ev, "type");
+                cJSON *edet = cJSON_GetObjectItem(ev, "detail");
+                cJSON *etm  = cJSON_GetObjectItem(ev, "time");
+                cJSON *eel  = cJSON_GetObjectItem(etm, "elapsed");
+                int emin    = cJSON_IsNumber(eel) ? (int)eel->valuedouble : 0;
+                const char *tp  = cJSON_IsString(etp)  ? etp->valuestring  : "";
+                const char *det = cJSON_IsString(edet) ? edet->valuestring : "";
+                if (strcmp(tp,"Goal")==0 && strcmp(det,"Missed Penalty")!=0) {
+                    if (emin >= best_goal_min) { best_goal_min = emin; best_goal = ev; }
+                }
+                if (strcmp(tp,"Card")==0 && strstr(det,"Red")) last_red = ev;
+            }
+            if (best_goal) {
+                cJSON *edet = cJSON_GetObjectItem(best_goal, "detail");
+                cJSON *etm  = cJSON_GetObjectItem(best_goal, "time");
+                cJSON *eel  = cJSON_GetObjectItem(etm, "elapsed");
+                cJSON *eex  = cJSON_GetObjectItem(etm, "extra");
+                cJSON *epln = cJSON_GetObjectItem(cJSON_GetObjectItem(best_goal,"player"),"name");
+                cJSON *etmn = cJSON_GetObjectItem(cJSON_GetObjectItem(best_goal,"team"), "name");
+                int emin  = cJSON_IsNumber(eel) ? (int)eel->valuedouble : 0;
+                int extra = (cJSON_IsNumber(eex)&&!cJSON_IsNull(eex)) ? (int)eex->valuedouble : 0;
+                const char *det = cJSON_IsString(edet) ? edet->valuestring : "";
+                const char *pn  = cJSON_IsString(epln) ? epln->valuestring : "";
+                const char *tn  = cJSON_IsString(etmn) ? etmn->valuestring : "";
+                int ti = team_by_name(tn);
+                char tc[4]="?"; if(ti>=0) strncpy(tc,TEAMS[ti].code,3);
+                const char *pfx = strstr(det,"Own Goal") ? "\xE2\x9A\xBD OG"  :
+                                  strstr(det,"Penalty")  ? "\xE2\x9A\xBD PEN" :
+                                                           "\xE2\x9A\xBD GOAL";
+                if (extra > 0)
+                    snprintf(m->last_event,127,"%s %d+%d' %s (%s)",pfx,emin,extra,pn,tc);
+                else
+                    snprintf(m->last_event,127,"%s %d' %s (%s)",pfx,emin,pn,tc);
+            } else if (last_red) {
+                cJSON *etm  = cJSON_GetObjectItem(last_red, "time");
+                cJSON *eel  = cJSON_GetObjectItem(etm, "elapsed");
+                cJSON *epln = cJSON_GetObjectItem(cJSON_GetObjectItem(last_red,"player"),"name");
+                cJSON *etmn = cJSON_GetObjectItem(cJSON_GetObjectItem(last_red,"team"), "name");
+                int emin    = cJSON_IsNumber(eel) ? (int)eel->valuedouble : 0;
+                const char *pn = cJSON_IsString(epln) ? epln->valuestring : "";
+                const char *tn = cJSON_IsString(etmn) ? etmn->valuestring : "";
+                int ti = team_by_name(tn);
+                char tc[4]="?"; if(ti>=0) strncpy(tc,TEAMS[ti].code,3);
+                snprintf(m->last_event,127,"\xF0\x9F\x9F\xA5 RED CARD %d' %s (%s)",emin,pn,tc);
+            }
         }
     }
     cJSON_Delete(root);
@@ -668,20 +696,28 @@ static int fd_parse_matches(const char *json,
         m->home_score=(cJSON_IsNumber(hsc)&&!cJSON_IsNull(hsc))?(int)hsc->valuedouble:0;
         m->away_score=(cJSON_IsNumber(asc)&&!cJSON_IsNull(asc))?(int)asc->valuedouble:0;
 
-        cJSON *goals=cJSON_GetObjectItem(item,"goals");
-        if (cJSON_IsArray(goals)&&cJSON_GetArraySize(goals)>0) {
-            int ng=cJSON_GetArraySize(goals);
-            cJSON *last=cJSON_GetArrayItem(goals,ng-1);
-            cJSON *gmin=cJSON_GetObjectItem(last,"minute");
-            cJSON *scr =cJSON_GetObjectItem(last,"scorer");
-            cJSON *snm =cJSON_GetObjectItem(scr,"name");
-            cJSON *tm  =cJSON_GetObjectItem(last,"team");
-            cJSON *tnn =cJSON_GetObjectItem(tm,"name");
-            int gm=cJSON_IsNumber(gmin)?(int)gmin->valuedouble:0;
-            const char *sn=cJSON_IsString(snm)?snm->valuestring:"";
-            int ti=team_by_name(cJSON_IsString(tnn)?tnn->valuestring:"");
+        cJSON *goals = cJSON_GetObjectItem(item, "goals");
+        if (cJSON_IsArray(goals) && cJSON_GetArraySize(goals) > 0) {
+            int ng   = cJSON_GetArraySize(goals);
+            cJSON *last = cJSON_GetArrayItem(goals, ng - 1);
+            cJSON *gtype = cJSON_GetObjectItem(last, "type");
+            cJSON *gmin  = cJSON_GetObjectItem(last, "minute");
+            cJSON *gadd  = cJSON_GetObjectItem(last, "additionalMinute");
+            cJSON *snm   = cJSON_GetObjectItem(cJSON_GetObjectItem(last,"scorer"), "name");
+            cJSON *gtnn  = cJSON_GetObjectItem(cJSON_GetObjectItem(last,"team"),   "name");
+            int gm    = cJSON_IsNumber(gmin) ? (int)gmin->valuedouble : 0;
+            int gadd_ = (cJSON_IsNumber(gadd)&&!cJSON_IsNull(gadd)) ? (int)gadd->valuedouble : 0;
+            const char *sn  = cJSON_IsString(snm)  ? snm->valuestring  : "";
+            const char *gtp = cJSON_IsString(gtype) ? gtype->valuestring : "GOAL";
+            int ti = team_by_name(cJSON_IsString(gtnn) ? gtnn->valuestring : "");
             char tc[4]="?"; if(ti>=0) strncpy(tc,TEAMS[ti].code,3);
-            snprintf(m->last_event,127,"\xE2\x9A\xBD GOAL %d' %s (%s)",gm,sn,tc);
+            const char *pfx = strcmp(gtp,"OWN_GOAL")==0 ? "\xE2\x9A\xBD OG"  :
+                              strcmp(gtp,"PENALTY") ==0 ? "\xE2\x9A\xBD PEN" :
+                                                          "\xE2\x9A\xBD GOAL";
+            if (gadd_ > 0)
+                snprintf(m->last_event,127,"%s %d+%d' %s (%s)",pfx,gm,gadd_,sn,tc);
+            else
+                snprintf(m->last_event,127,"%s %d' %s (%s)",pfx,gm,sn,tc);
         }
     }
     cJSON_Delete(root); return 0;
