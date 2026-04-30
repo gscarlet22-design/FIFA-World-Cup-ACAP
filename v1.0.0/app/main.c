@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.9  gscarlet22 design  (Sprint 7: display preview + manual override)
+ * v1.1.0  gscarlet22 design  (Sprint 8: polish, health endpoint, shutdown clear)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.9"
+#define APP_VER         "1.1.0"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -261,6 +261,7 @@ typedef struct {
     char last_display_text[512]; /* last text successfully pushed to display  */
     char override_text[512];     /* manual override message (empty = none)    */
     time_t override_expires;     /* 0=none; large value=until-cleared; else epoch */
+    time_t start_time;           /* time(NULL) at startup — for /health       */
 
     /* Runtime */
     pthread_mutex_t lock;
@@ -1794,10 +1795,23 @@ static void handle_client(int fd) {
      * proxy strips.  Identical pattern to the working MLB app. */
     #define ROUTE(r) (strstr(path,(r))!=NULL)
 
+    /* ── GET /health ── */
+    /* Lightweight liveness probe — no lock needed. */
+    if (!strcmp(method,"GET") && ROUTE("/health")) {
+        long uptime = (long)(time(NULL) - g_app.start_time);
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "status",     "ok");
+        cJSON_AddStringToObject(root, "version",    APP_VER);
+        cJSON_AddNumberToObject(root, "uptime_sec", (double)uptime);
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        send_json(fd, 200, js ? js : "{}"); free(js); return;
+    }
+
     /* ── GET /status ── */
     if (!strcmp(method,"GET") && ROUTE("/status")) {
         pthread_mutex_lock(&g_app.lock);
         cJSON *root=cJSON_CreateObject();
+        cJSON_AddStringToObject(root,"app_version",APP_VER);
         cJSON_AddBoolToObject(root,"enabled",g_app.enabled);
         cJSON_AddBoolToObject(root,"demo_mode",g_app.demo_mode);
         cJSON_AddStringToObject(root,"data_source",
@@ -2623,7 +2637,11 @@ static void load_config(void) {
 /* ═══════════════════════════ Main ══════════════════════════════ */
 
 static volatile int g_quit=0;
-static void on_sig(int s) { (void)s; g_quit=1; g_app.running=0; }
+static void on_sig(int s) {
+    (void)s; g_quit=1; g_app.running=0;
+    /* Blank the display so stale ticker text doesn't freeze on screen */
+    display_show("", NULL, 0);
+}
 
 int main(void) {
     LOG("FIFA World Cup 2026 Ticker v%s",APP_VER);
@@ -2632,6 +2650,7 @@ int main(void) {
     memset(&g_app,0,sizeof(g_app));
     pthread_mutex_init(&g_app.lock,NULL);
     g_app.running=1;
+    g_app.start_time=time(NULL);
 
     GError *err=NULL;
     g_app.axp=ax_parameter_new(APP_NAME,&err);

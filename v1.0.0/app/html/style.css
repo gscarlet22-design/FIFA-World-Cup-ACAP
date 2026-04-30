@@ -307,3 +307,12 @@ input[type="range"] { width: calc(100% - 28px); accent-color: #c5a028; vertical-
     0%   { transform: translateX(100%); }
     100% { transform: translateX(-200%); }
 }
+
+/* ── App Footer ──────────────────────────────────────────────── */
+.app-footer {
+    text-align: center;
+    font-size: 12px;
+    color: #3a4f6e;
+    padding: 16px 0;
+    margin-top: 8px;
+}
