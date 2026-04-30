@@ -14,6 +14,8 @@
             document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('active'); });
             tab.classList.add('active');
             document.getElementById(tab.dataset.tab).classList.add('active');
+            if (tab.dataset.tab === 'live')      startDisplayPoll();
+            else                                 stopDisplayPoll();
             if (tab.dataset.tab === 'standings') refreshStandings();
             if (tab.dataset.tab === 'bracket')   refreshBracket();
             if (tab.dataset.tab === 'scorers')   refreshScorers();
@@ -139,6 +141,40 @@
         api('/refresh', { method: 'POST' }).catch(function () {});
         setTimeout(refreshStatus, 1500);
     });
+
+    /* ── Display Preview (Live tab) ───────────────────────── */
+    var displayPollTimer = null;
+
+    function refreshDisplayState() {
+        api('/display_state').then(function (r) { return r.json(); }).then(function (d) {
+            var txt  = d.current || '--';
+            var wrap = document.getElementById('display-preview');
+            var span = document.getElementById('display-text');
+            var badge = document.getElementById('override-badge');
+            span.textContent = txt;
+            /* Animate text if it's long enough to need scrolling */
+            if (txt.length > 30) {
+                wrap.classList.add('scrolling');
+            } else {
+                wrap.classList.remove('scrolling');
+            }
+            if (badge) {
+                if (d.override_active) badge.classList.remove('hidden');
+                else                   badge.classList.add('hidden');
+            }
+        }).catch(function () {});
+    }
+
+    function startDisplayPoll() {
+        refreshDisplayState();
+        if (!displayPollTimer) displayPollTimer = setInterval(refreshDisplayState, 3000);
+    }
+    function stopDisplayPoll() {
+        if (displayPollTimer) { clearInterval(displayPollTimer); displayPollTimer = null; }
+    }
+
+    /* Start polling on the default (Live) tab */
+    startDisplayPoll();
 
     /* ── Standings Tab ────────────────────────────────────── */
     function refreshStandings() {
@@ -599,6 +635,42 @@
                     (d.clip_resp ? '\n' + d.clip_resp : ''), ok);
             })
             .catch(function (e) { showAudioMsg('Audio test failed: ' + e, false); });
+    });
+
+    /* ── Manual Override ─────────────────────────────────── */
+    function showOverrideMsg(txt, ok) {
+        var el = document.getElementById('override-status');
+        el.textContent = txt;
+        el.className = 'save-msg ' + (ok === false ? 'error' : '');
+        setTimeout(function () { el.textContent = ''; el.className = 'save-msg'; }, 5000);
+    }
+
+    document.getElementById('btn-send-override').addEventListener('click', function () {
+        var txt  = document.getElementById('override-msg').value.trim();
+        var secs = parseInt(document.getElementById('override-dur').value, 10);
+        if (!txt) { showOverrideMsg('Enter override text first', false); return; }
+        api('/display_override', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ text: txt, duration_sec: secs }),
+        }).then(function (r) { return r.json(); })
+          .then(function (d) {
+              var label = secs > 0 ? secs + 's' : 'until cleared';
+              showOverrideMsg('\u2713 Override active (' + label + ')', true);
+              refreshDisplayState();
+          })
+          .catch(function (e) { showOverrideMsg('Failed: ' + e, false); });
+    });
+
+    document.getElementById('btn-clear-override').addEventListener('click', function () {
+        api('/display_override', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ text: '' }),
+        }).then(function () {
+            showOverrideMsg('\u2713 Override cleared', true);
+            refreshDisplayState();
+        }).catch(function (e) { showOverrideMsg('Failed: ' + e, false); });
     });
 
     /* ── Diagnostics Tab ──────────────────────────────────── */

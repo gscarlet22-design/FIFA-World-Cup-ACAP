@@ -2,7 +2,7 @@
 /*
  * fifa_wc — FIFA World Cup 2026 Live Ticker
  * AXIS ACAP Native SDK  —  Axis C1720 / C1710
- * v1.0.8  gscarlet22 design  (Sprint 6: per-team audio & display overrides)
+ * v1.0.9  gscarlet22 design  (Sprint 7: display preview + manual override)
  *
  * Dual-API strategy:
  *   Primary:  api-football   (v3.football.api-sports.io)
@@ -42,7 +42,7 @@
 
 /* ── Constants ────────────────────────────────────────────────── */
 #define APP_NAME        "fifa_wc"
-#define APP_VER         "1.0.8"
+#define APP_VER         "1.0.9"
 #define HTTP_PORT       2016
 #define MIN_POLL_SEC    180           /* 3-minute hard floor on API calls     */
 #define STD_POLL_SEC    180
@@ -257,6 +257,10 @@ typedef struct {
     int       nscorers;
     time_t    last_poll;
     DataSrc   last_src;
+
+    char last_display_text[512]; /* last text successfully pushed to display  */
+    char override_text[512];     /* manual override message (empty = none)    */
+    time_t override_expires;     /* 0=none; large value=until-cleared; else epoch */
 
     /* Runtime */
     pthread_mutex_t lock;
@@ -1436,6 +1440,10 @@ static long display_show(const char *msg, char *resp_out, size_t resp_sz) {
     if(resp_out&&resp_sz>0)
         snprintf(resp_out,resp_sz,"http=%ld resp=%s",
                  http_code,resp.data?resp.data:"(empty)");
+    if (rc == CURLE_OK && http_code >= 200 && http_code < 300) {
+        strncpy(g_app.last_display_text, msg, sizeof(g_app.last_display_text)-1);
+        g_app.last_display_text[sizeof(g_app.last_display_text)-1] = '\0';
+    }
     free(js); free(resp.data);
     curl_slist_free_all(hdrs); curl_easy_cleanup(curl);
     return (rc==CURLE_OK)?http_code:-1;
@@ -1552,7 +1560,19 @@ static void *display_thread(void *arg) {
         pthread_mutex_unlock(&g_app.lock);
 
         if (go) {
-            display_show(msg, NULL, 0);
+            /* Check manual override first */
+            char disp[MSG_SZ];
+            pthread_mutex_lock(&g_app.lock);
+            if (g_app.override_expires > 0 && time(NULL) < g_app.override_expires) {
+                strncpy(disp, g_app.override_text, MSG_SZ-1);
+                disp[MSG_SZ-1] = '\0';
+            } else {
+                if (g_app.override_expires > 0) g_app.override_expires = 0; /* expire */
+                strncpy(disp, msg, MSG_SZ-1);
+                disp[MSG_SZ-1] = '\0';
+            }
+            pthread_mutex_unlock(&g_app.lock);
+            display_show(disp, NULL, 0);
             int w=0;
             while (g_app.running && w<dur) {
                 int s=dur-w<500?dur-w:500;
@@ -2432,6 +2452,65 @@ static void handle_client(int fd) {
         char *js=cJSON_PrintUnformatted(out); cJSON_Delete(out);
         free(resp.data);
         send_json(fd,200,js?js:"{}"); free(js); return;
+    }
+
+    /* ── GET /display_state ── */
+    /* Returns the last text pushed to the display + override status. */
+    if (!strcmp(method,"GET") && ROUTE("/display_state")) {
+        pthread_mutex_lock(&g_app.lock);
+        char last[512];
+        strncpy(last, g_app.last_display_text, sizeof(last)-1);
+        last[511] = '\0';
+        int ov_active = (g_app.override_expires > 0 &&
+                         time(NULL) < g_app.override_expires);
+        pthread_mutex_unlock(&g_app.lock);
+
+        pthread_mutex_lock(&g_dlock);
+        int qlen = g_dcount;
+        pthread_mutex_unlock(&g_dlock);
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "current",         last);
+        cJSON_AddNumberToObject(root, "queue_len",       (double)qlen);
+        cJSON_AddBoolToObject  (root, "override_active", ov_active);
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        send_json(fd, 200, js ? js : "{}"); free(js); return;
+    }
+
+    /* ── POST /display_override ── */
+    /* Body: {"text":"...","duration_sec":30}  duration_sec=0 → until cleared.
+       Send text="" to clear an active override. */
+    if (!strcmp(method,"POST") && ROUTE("/display_override")) {
+        char body[640]; read_body(fd, req, body, sizeof(body));
+        cJSON *j = cJSON_Parse(body);
+
+        pthread_mutex_lock(&g_app.lock);
+        if (j) {
+            cJSON *txt = cJSON_GetObjectItem(j, "text");
+            cJSON *dur = cJSON_GetObjectItem(j, "duration_sec");
+            if (cJSON_IsString(txt)) {
+                if (txt->valuestring[0] == '\0') {
+                    /* Clear override */
+                    g_app.override_expires = 0;
+                    g_app.override_text[0] = '\0';
+                } else {
+                    int secs = cJSON_IsNumber(dur) ? (int)dur->valuedouble : 30;
+                    strncpy(g_app.override_text, txt->valuestring,
+                            sizeof(g_app.override_text)-1);
+                    g_app.override_text[sizeof(g_app.override_text)-1] = '\0';
+                    /* secs=0 → ~one year (until manually cleared) */
+                    g_app.override_expires = (secs > 0)
+                        ? time(NULL) + secs
+                        : time(NULL) + (365 * 24 * 3600);
+                    LOG("display override set: \"%s\" for %ds",
+                        g_app.override_text, secs);
+                }
+            }
+            cJSON_Delete(j);
+        }
+        pthread_mutex_unlock(&g_app.lock);
+
+        send_json(fd, 200, "{\"ok\":true}"); return;
     }
 
     LOG("404 method=%s path=%s",method,path);

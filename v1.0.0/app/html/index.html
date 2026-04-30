@@ -12,7 +12,7 @@
     <div class="header">
         <div class="logo">&#127942;</div>
         <h1>FIFA World Cup 2026</h1>
-        <p class="subtitle">gscarlet22 design &mdash; v1.0.8</p>
+        <p class="subtitle">gscarlet22 design &mdash; v1.0.9</p>
     </div>
 
     <div class="tabs">
@@ -48,6 +48,12 @@
             <span id="st-poll" class="poll-time">--</span>
             <span class="status-label" style="margin-left:10px;">Poll</span>
             <span id="st-poll-mode" class="poll-time">--</span>
+            <span id="override-badge" class="src-badge hidden" style="margin-left:10px;background:#c0392b;">OVERRIDE</span>
+        </div>
+
+        <div class="section-label" style="margin-top:16px;">Display Preview</div>
+        <div id="display-preview" class="display-preview">
+            <span id="display-text">--</span>
         </div>
     </div>
 
@@ -192,6 +198,33 @@
             </div>
         </div>
         <button id="btn-test-display" class="btn btn-secondary btn-full">&#128250; Test Display Message</button>
+
+        <hr class="divider">
+
+        <h3 class="section-title">&#9881; Manual Override</h3>
+        <p class="hint">
+            Inject a custom message directly onto the display for a fixed duration.
+            The ticker resumes automatically when the override expires.
+        </p>
+        <div class="form-group">
+            <label for="override-msg">Override Text</label>
+            <input type="text" id="override-msg" placeholder="e.g. Gates open at 6 PM&hellip;" maxlength="511">
+        </div>
+        <div class="form-group">
+            <label for="override-dur">Duration</label>
+            <select id="override-dur">
+                <option value="15">15 seconds</option>
+                <option value="30" selected>30 seconds</option>
+                <option value="60">1 minute</option>
+                <option value="120">2 minutes</option>
+                <option value="0">Until cleared</option>
+            </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button id="btn-send-override" class="btn btn-primary" style="flex:1">&#9654; Send Override</button>
+            <button id="btn-clear-override" class="btn btn-secondary" style="flex:1">&#10005; Clear Override</button>
+        </div>
+        <div id="override-status" class="save-msg"></div>
 
         <hr class="divider">
 
