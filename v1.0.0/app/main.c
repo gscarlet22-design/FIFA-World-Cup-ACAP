@@ -1083,7 +1083,7 @@ static void rebuild_queue_locked(void) {
                         g_app.last_src==SRC_FD?"football-data":"--";
         snprintf(msgs[cnt],MSG_SZ,
             "\xF0\x9F\x8F\x86 FIFA World Cup 2026  |  %s",src);
-        durs[cnt++]=dur;
+        durs[cnt++]=gdur;
     }
 
     pthread_mutex_lock(&g_dlock);
