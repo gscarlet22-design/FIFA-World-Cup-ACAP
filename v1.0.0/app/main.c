@@ -1000,6 +1000,9 @@ static void rebuild_queue_locked(void) {
     int    cnt=0;
     int    gdur = g_app.duration_ms>0 ? g_app.duration_ms : 15000;
 #define SDUR(field) ((g_app.field > 0) ? g_app.field : gdur)
+    /* Goal/event text: always at least 10 s regardless of global dwell */
+#define GEVDUR (g_app.dur_goal_events_ms > 0 ? g_app.dur_goal_events_ms \
+                : (gdur > 10000 ? gdur : 10000))
 
     /* ── Pass 0: live knockout matches for selected teams ── */
     if (g_app.sec_live_yours) {
@@ -1022,7 +1025,7 @@ static void rebuild_queue_locked(void) {
         durs[cnt++]=d0;
         if (m->last_event[0] && cnt<MAX_DISP_MSG) {
             strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
-            durs[cnt++]=d0/2;
+            durs[cnt++]=GEVDUR;
         }
     }
     } /* sec_live_yours */
@@ -1052,7 +1055,7 @@ static void rebuild_queue_locked(void) {
             durs[cnt++]=dl;
             if (m->last_event[0] && cnt<MAX_DISP_MSG) {
                 strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
-                durs[cnt++]=dl/2;
+                durs[cnt++]=GEVDUR;
             }
         } else if (ht && g_app.sec_ht_yours) {
             snprintf(msgs[cnt],MSG_SZ,
@@ -1672,12 +1675,17 @@ static void strobe_goal(const NMatch *m, int side, int flashes) {
     g_app.strobe_active = 1;
     pthread_mutex_unlock(&g_app.lock);
 
-    /* Alternating primary / inverted kit colors */
+    /* Alternating primary / inverted kit colors — 3 s per flash */
     for (int f = 0; f < flashes && g_app.running; f++) {
         const char *b = (f % 2 == 0) ? kb : kf;
         const char *t = (f % 2 == 0) ? kf : kb;
-        display_flash(msg, b, t, 1800);
-        usleep(1900000);
+        display_flash(msg, b, t, 3000);
+        usleep(3100000);
+    }
+    /* Hold final goal message steady for 8 s before returning display to queue */
+    if (g_app.running) {
+        display_flash(msg, kb, kf, 8000);
+        usleep(8100000);
     }
 
     pthread_mutex_lock(&g_app.lock);
