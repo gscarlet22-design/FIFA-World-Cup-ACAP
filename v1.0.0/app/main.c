@@ -703,6 +703,30 @@ static void fd_norm_status(const char *s, char *out) {
     else { strncpy(out,s,7); out[7]='\0'; }
 }
 
+/* Convert "2026-06-15T19:00:00Z" to Unix epoch (UTC, no mktime/timegm needed) */
+static time_t iso_utc_to_epoch(const char *s) {
+    int Y,Mo,D,h,mi,sec;
+    if (sscanf(s,"%d-%d-%dT%d:%d:%dZ",&Y,&Mo,&D,&h,&mi,&sec)!=6) return 0;
+    int a=(14-Mo)/12, y=Y+4800-a, jm=Mo+12*a-3;
+    long jdn=(long)D+(153*jm+2)/5+365L*y+y/4-y/100+y/400-32045L;
+    return (time_t)((jdn-2440588L)*86400 + h*3600 + mi*60 + sec);
+}
+
+/* Estimate live elapsed minutes from kickoff when the API doesn't supply one */
+static int elapsed_from_kickoff(const char *kickoff_iso, const char *status) {
+    time_t ko=iso_utc_to_epoch(kickoff_iso);
+    if (!ko) return 0;
+    int mins=(int)((time(NULL)-ko)/60);
+    if (mins<0) mins=0;
+    if (!strcmp(status,"2H")) {
+        /* roughly 45 min of play + ~15 min HT break before 2H */
+        mins-=15; if(mins<45) mins=45; if(mins>90) mins=90;
+    } else {
+        if(mins>45) mins=45;
+    }
+    return mins;
+}
+
 static int fd_parse_matches(const char *json,
                              NMatch *matches, int maxm, int *count) {
     *count=0;
@@ -748,9 +772,20 @@ static int fd_parse_matches(const char *json,
         cJSON *dt=cJSON_GetObjectItem(item,"utcDate");
         if (cJSON_IsString(dt)) strncpy(m->kickoff_iso,dt->valuestring,31);
 
+        /* FD /competitions endpoint often omits minute — estimate from kickoff */
+        if (m->elapsed==0 && m->kickoff_iso[0] &&
+            (!strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
+             !strcmp(m->status,"ET")||!strcmp(m->status,"PEN")))
+            m->elapsed=elapsed_from_kickoff(m->kickoff_iso,m->status);
+
         cJSON *grp=cJSON_GetObjectItem(item,"group");
-        if (cJSON_IsString(grp)) strncpy(m->group,grp->valuestring,11);
-        else strncpy(m->group,"Group Stage",11);
+        if (cJSON_IsString(grp)) {
+            const char *gv=grp->valuestring;
+            /* FD returns "GROUP_A" — normalize to "Group A" */
+            if (strncmp(gv,"GROUP_",6)==0 && gv[6])
+                snprintf(m->group,12,"Group %c",gv[6]);
+            else strncpy(m->group,gv,11);
+        } else strncpy(m->group,"Group Stage",11);
         cJSON *stg=cJSON_GetObjectItem(item,"stage");
         norm_round(cJSON_IsString(stg)?stg->valuestring:"", m->round);
 
