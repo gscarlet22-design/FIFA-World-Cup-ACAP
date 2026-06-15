@@ -813,9 +813,29 @@ static int fd_parse_matches(const char *json,
         m->home_score=(cJSON_IsNumber(hsc)&&!cJSON_IsNull(hsc))?(int)hsc->valuedouble:0;
         m->away_score=(cJSON_IsNumber(asc)&&!cJSON_IsNull(asc))?(int)asc->valuedouble:0;
 
+        /* Count goals from goals[] array — more reliable than score.fullTime
+           on free tier (fullTime can lag or stay 0 during live play).
+           Own goals count for the opponent. */
         cJSON *goals = cJSON_GetObjectItem(item, "goals");
         if (cJSON_IsArray(goals) && cJSON_GetArraySize(goals) > 0) {
-            int ng   = cJSON_GetArraySize(goals);
+            cJSON *hti2=cJSON_GetObjectItem(cJSON_GetObjectItem(item,"homeTeam"),"id");
+            int home_tid=cJSON_IsNumber(hti2)?(int)hti2->valuedouble:-1;
+            int hg=0,ag=0;
+            int ng=cJSON_GetArraySize(goals);
+            for (int gi=0;gi<ng;gi++) {
+                cJSON *ge=cJSON_GetArrayItem(goals,gi);
+                cJSON *gtm=cJSON_GetObjectItem(ge,"team");
+                cJSON *gtid=cJSON_GetObjectItem(gtm,"id");
+                cJSON *gtp2=cJSON_GetObjectItem(ge,"type");
+                int sid=cJSON_IsNumber(gtid)?(int)gtid->valuedouble:-1;
+                int og=cJSON_IsString(gtp2)&&!strcmp(gtp2->valuestring,"OWN_GOAL");
+                /* own goal flips the scoring team */
+                if (og?(sid!=home_tid):(sid==home_tid)) hg++; else ag++;
+            }
+            /* Use goal count as a floor — it's always at least as current as fullTime */
+            if (hg>m->home_score) m->home_score=hg;
+            if (ag>m->away_score) m->away_score=ag;
+
             cJSON *last = cJSON_GetArrayItem(goals, ng - 1);
             cJSON *gtype = cJSON_GetObjectItem(last, "type");
             cJSON *gmin  = cJSON_GetObjectItem(last, "minute");
@@ -1720,34 +1740,62 @@ static void fd_patch_live_minutes(NMatch *matches, int nm) {
     pthread_mutex_unlock(&g_app.lock);
     if (!fdk[0]) return;
 
+    /* Cap at 2 detail fetches per cycle: prioritise selected teams first,
+       then fill remaining slot(s) with other live matches.
+       Free tier = 10 req/min; base cycle = 3 req → 2 detail calls = 5/30s = 10/min. */
+    int fetched = 0;
     char detail[8192];
-    for (int i = 0; i < nm; i++) {
-        NMatch *m = &matches[i];
-        if (!m->id) continue;
-        int live = !strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
-                   !strcmp(m->status,"ET")||!strcmp(m->status,"PEN");
-        if (!live) continue;
 
-        char url[128];
-        snprintf(url, sizeof(url), "%s/matches/%d", FD_BASE, m->id);
-        long code = 0;
-        memset(detail, 0, sizeof(detail));
-        http_get(url, "X-Auth-Token", fdk, detail, sizeof(detail), &code);
-        if (code != 200 || !detail[0]) continue;
+    for (int pass = 0; pass < 2 && fetched < 2; pass++) {
+        for (int i = 0; i < nm && fetched < 2; i++) {
+            NMatch *m = &matches[i];
+            if (!m->id) continue;
+            int live = !strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
+                       !strcmp(m->status,"ET")||!strcmp(m->status,"PEN");
+            if (!live) continue;
+            int tracked = is_selected(m->home_code)||is_selected(m->away_code);
+            /* pass 0: tracked only; pass 1: untracked */
+            if (pass == 0 && !tracked) continue;
+            if (pass == 1 &&  tracked) continue;
 
-        cJSON *root = cJSON_Parse(detail);
-        if (!root) continue;
+            char url[128];
+            snprintf(url, sizeof(url), "%s/matches/%d", FD_BASE, m->id);
+            long code = 0;
+            memset(detail, 0, sizeof(detail));
+            http_get(url, "X-Auth-Token", fdk, detail, sizeof(detail), &code);
+            fetched++;
+            if (code != 200 || !detail[0]) continue;
 
-        cJSON *min = cJSON_GetObjectItem(root, "minute");
-        if (cJSON_IsNumber(min) && !cJSON_IsNull(min)) {
-            int api_min = (int)min->valuedouble;
-            if (api_min > 0) m->elapsed = api_min;
+            cJSON *root = cJSON_Parse(detail);
+            if (!root) continue;
+
+            /* Patch minute */
+            cJSON *min = cJSON_GetObjectItem(root, "minute");
+            if (cJSON_IsNumber(min) && !cJSON_IsNull(min)) {
+                int api_min = (int)min->valuedouble;
+                if (api_min > 0) m->elapsed = api_min;
+            }
+            /* Patch stoppage time */
+            cJSON *inj = cJSON_GetObjectItem(root, "injuryTime");
+            if (cJSON_IsNumber(inj) && !cJSON_IsNull(inj))
+                m->extra = (int)inj->valuedouble;
+
+            /* Patch scores from detail — use as floor over bulk response */
+            cJSON *sc2 = cJSON_GetObjectItem(root, "score");
+            cJSON *ft2 = cJSON_GetObjectItem(sc2, "fullTime");
+            cJSON *h2  = cJSON_GetObjectItem(ft2, "home");
+            cJSON *a2  = cJSON_GetObjectItem(ft2, "away");
+            if (cJSON_IsNumber(h2) && !cJSON_IsNull(h2)) {
+                int hs = (int)h2->valuedouble;
+                if (hs > m->home_score) m->home_score = hs;
+            }
+            if (cJSON_IsNumber(a2) && !cJSON_IsNull(a2)) {
+                int as2 = (int)a2->valuedouble;
+                if (as2 > m->away_score) m->away_score = as2;
+            }
+
+            cJSON_Delete(root);
         }
-        cJSON *inj = cJSON_GetObjectItem(root, "injuryTime");
-        if (cJSON_IsNumber(inj) && !cJSON_IsNull(inj))
-            m->extra = (int)inj->valuedouble;
-
-        cJSON_Delete(root);
     }
 }
 
