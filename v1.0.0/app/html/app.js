@@ -460,6 +460,7 @@
             document.getElementById('prematch-poll-sec').value = String(d.prematch_poll_sec || 90);
             document.getElementById('idle-poll-sec').value     = String(d.idle_poll_sec     || 300);
             document.getElementById('poll-interval').value     = String(d.poll_interval_sec || 0);
+            document.getElementById('preferred-source').value  = d.preferred_source || '';
             document.getElementById('webhook-enabled').checked = !!d.webhook_enabled;
             document.getElementById('webhook-url').placeholder =
                 d.webhook_url === '***' ? '(configured — paste to update)' : 'https://\u2026';
@@ -519,6 +520,7 @@
             live_poll_sec:      parseInt(document.getElementById('live-poll-sec').value, 10),
             prematch_poll_sec:  parseInt(document.getElementById('prematch-poll-sec').value, 10),
             idle_poll_sec:      parseInt(document.getElementById('idle-poll-sec').value, 10),
+            preferred_source:   document.getElementById('preferred-source').value,
             webhook_enabled:    document.getElementById('webhook-enabled').checked,
             text_color:        document.getElementById('text-color').value,
             bg_color:          document.getElementById('bg-color').value,

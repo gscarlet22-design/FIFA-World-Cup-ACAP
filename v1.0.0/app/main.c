@@ -237,6 +237,7 @@ typedef struct {
     int  goal_clip_id;      /* mediaclip store ID for goal sound         */
     int  alert_clip_id;     /* mediaclip store ID for halftime/KO sound  */
     char webhook_url[256];  /* outbound goal event push URL (empty=off)  */
+    char preferred_source[4]; /* "af", "fd", or "" = auto (af→fd)        */
     int  webhook_enabled;   /* 0 = disabled                              */
     int  strobe_enabled;    /* flash team colors on goal (0=off)         */
     int  strobe_flashes;    /* number of alternating flashes (2–10)      */
@@ -399,8 +400,11 @@ static DataSrc fetch_ep(const char *af_path, const char *fd_path,
         return SRC_NONE;
     }
 
+    int skip_af = (g_app.preferred_source[0] == 'f'); /* "fd" → skip af */
+    int skip_fd = (g_app.preferred_source[0] == 'a'); /* "af" → skip fd */
+
     /* ─── Primary: api-football ─── */
-    if (g_app.af_key[0]) {
+    if (!skip_af && g_app.af_key[0]) {
         char url[512];
         snprintf(url, sizeof(url), "%s%s", AF_BASE, af_path);
         long code=0;
@@ -412,7 +416,7 @@ static DataSrc fetch_ep(const char *af_path, const char *fd_path,
     }
 
     /* ─── Fallback: football-data.org ─── */
-    if (g_app.fd_key[0]) {
+    if (!skip_fd && g_app.fd_key[0]) {
         char url[512];
         snprintf(url, sizeof(url), "%s%s", FD_BASE, fd_path);
         long code=0;
@@ -2021,6 +2025,7 @@ static void handle_client(int fd) {
         cJSON_AddNumberToObject(root,"idle_poll_sec",g_app.idle_poll_sec);
         cJSON_AddBoolToObject(root,"webhook_enabled",g_app.webhook_enabled);
         cJSON_AddStringToObject(root,"webhook_url",g_app.webhook_url[0]?"***":"");
+        cJSON_AddStringToObject(root,"preferred_source",g_app.preferred_source);
         cJSON_AddBoolToObject(root,"strobe_enabled",g_app.strobe_enabled);
         cJSON_AddNumberToObject(root,"strobe_flashes",(double)g_app.strobe_flashes);
         cJSON *ovarr = cJSON_CreateArray();
@@ -2081,8 +2086,9 @@ static void handle_client(int fd) {
     cJSON *_f=cJSON_GetObjectItem(j,key); \
     if(cJSON_IsNumber(_f)) dst=(int)_f->valuedouble; } while(0)
 
-        STR_FIELD("af_key",     g_app.af_key,    64);
-        STR_FIELD("fd_key",     g_app.fd_key,    64);
+        STR_FIELD("af_key",           g_app.af_key,          64);
+        STR_FIELD("fd_key",           g_app.fd_key,          64);
+        STR_FIELD("preferred_source", g_app.preferred_source, 4);
         STR_FIELD("device_user",g_app.dev_user,  64);
         STR_FIELD("device_pass",g_app.dev_pass,  64);
         STR_FIELD("text_color", g_app.text_color,16);
@@ -2154,7 +2160,8 @@ static void handle_client(int fd) {
         cJSON_AddNumberToObject(cfg,"prematch_poll_sec",g_app.prematch_poll_sec);
         cJSON_AddNumberToObject(cfg,"idle_poll_sec",    g_app.idle_poll_sec);
         cJSON_AddBoolToObject(cfg,"webhook_enabled",    g_app.webhook_enabled);
-        cJSON_AddStringToObject(cfg,"webhook_url",      g_app.webhook_url);
+        cJSON_AddStringToObject(cfg,"webhook_url",        g_app.webhook_url);
+        cJSON_AddStringToObject(cfg,"preferred_source",  g_app.preferred_source);
         cJSON_AddBoolToObject(cfg,"strobe_enabled",     g_app.strobe_enabled);
         cJSON_AddNumberToObject(cfg,"strobe_flashes",   (double)g_app.strobe_flashes);
         cJSON *ovarr2 = cJSON_CreateArray();
@@ -2669,7 +2676,8 @@ static void load_config(void) {
     LB("demo_mode",      g_app.demo_mode);
     LB("audio_enabled",      g_app.audio_enabled);
     LB("webhook_enabled",    g_app.webhook_enabled);
-    LS("webhook_url",        g_app.webhook_url,   256);
+    LS("webhook_url",        g_app.webhook_url,    256);
+    LS("preferred_source",  g_app.preferred_source, 4);
     LB("strobe_enabled",     g_app.strobe_enabled);
     LN("strobe_flashes",     g_app.strobe_flashes);
     {
