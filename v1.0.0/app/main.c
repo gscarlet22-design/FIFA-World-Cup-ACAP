@@ -1818,13 +1818,16 @@ static int compute_interval_locked(void) {
 
     for (int i = 0; i < g_app.nmatches; i++) {
         NMatch *m = &g_app.matches[i];
-        if (!is_selected(m->home_code) && !is_selected(m->away_code)) continue;
+        int tracked = is_selected(m->home_code) || is_selected(m->away_code);
+        /* Skip untracked unless alert_all_goals is on (then all live matches matter) */
+        if (!tracked && !g_app.alert_all_goals) continue;
 
         int live = !strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
                    !strcmp(m->status,"ET")||!strcmp(m->status,"PEN");
         if (live)        { mode = 2; break; } /* highest priority */
 
-        if (!strcmp(m->status,"NS") && mode < 1) {
+        /* Prematch countdown only for explicitly tracked teams */
+        if (tracked && !strcmp(m->status,"NS") && mode < 1) {
             /* Check if kickoff is within 20 minutes */
             struct tm tm; memset(&tm,0,sizeof(tm));
             if (sscanf(m->kickoff_iso,"%d-%d-%dT%d:%d:%d",
