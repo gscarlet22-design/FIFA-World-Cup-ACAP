@@ -1557,7 +1557,8 @@ static void *display_thread(void *arg) {
         pthread_mutex_unlock(&g_dlock);
 
         pthread_mutex_lock(&g_app.lock);
-        int go=g_app.enabled&&g_app.disp_enabled&&!g_app.strobe_active;
+        int ov_active = g_app.override_expires > 0 && time(NULL) < g_app.override_expires;
+        int go = (g_app.enabled || ov_active) && g_app.disp_enabled && !g_app.strobe_active;
         pthread_mutex_unlock(&g_app.lock);
 
         if (go) {
@@ -1742,7 +1743,6 @@ static void *poll_thread(void *arg) {
         int iv = compute_interval_locked();
         time_t lp = g_app.last_poll;
         pthread_mutex_unlock(&g_app.lock);
-        if (!en) continue;
         if (time(NULL) - lp >= iv) do_fetch();
         else {
             pthread_mutex_lock(&g_app.lock);
@@ -1818,7 +1818,9 @@ static void handle_client(int fd) {
             g_app.last_src==SRC_AF?"api-football":
             g_app.last_src==SRC_FD?"football-data":
             g_app.last_src==SRC_MOCK?"mock":"none");
-        char ts[32]; strftime(ts,sizeof(ts),"%Y-%m-%dT%H:%M:%S",localtime(&g_app.last_poll));
+        char ts[32];
+        if (g_app.last_poll == 0) strcpy(ts, "never");
+        else strftime(ts,sizeof(ts),"%Y-%m-%dT%H:%M:%S",localtime(&g_app.last_poll));
         cJSON_AddStringToObject(root,"last_poll",ts);
         cJSON_AddStringToObject(root,"poll_mode",
             g_app.poll_mode[0] ? g_app.poll_mode : "idle");
