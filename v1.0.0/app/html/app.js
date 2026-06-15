@@ -881,6 +881,38 @@
         });
     });
 
+    /* 8 — football-data.org live match raw response */
+    document.getElementById('diag-fd').addEventListener('click', function () {
+        diagRun('diag-fd', 'diag-fd-out', function (done) {
+            api('/diag_fd')
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    var lines = [];
+                    lines.push('HTTP ' + d.http_code + '  live matches found: ' + (d.match_count || 0));
+                    if (d.parse_error) { lines.push('Parse error: ' + d.parse_error); return done(lines.join('\n'), false); }
+                    if (!d.first_match) { lines.push('No IN_PLAY matches right now.'); return done(lines.join('\n'), true); }
+                    var m = d.first_match;
+                    lines.push('');
+                    lines.push('status:    ' + (m.status || '?'));
+                    lines.push('minute:    ' + (m.minute != null ? m.minute : 'NULL ← this is the bug'));
+                    lines.push('injuryTime:' + (m.injuryTime != null ? m.injuryTime : 'null'));
+                    if (m.currentPeriod) lines.push('currentPeriod: ' + JSON.stringify(m.currentPeriod));
+                    var sc = m.score || {};
+                    var ft = sc.fullTime || {};
+                    var ht = sc.halfTime || {};
+                    lines.push('score.fullTime:  home=' + ft.home + '  away=' + ft.away);
+                    lines.push('score.halfTime:  home=' + ht.home + '  away=' + ht.away);
+                    lines.push('homeTeam tla: ' + ((m.homeTeam || {}).tla || '?'));
+                    lines.push('awayTeam tla: ' + ((m.awayTeam || {}).tla || '?'));
+                    lines.push('');
+                    lines.push('── raw first_match JSON ──');
+                    lines.push(JSON.stringify(m, null, 2));
+                    done(lines.join('\n'), d.http_code === 200);
+                })
+                .catch(function (e) { done('✗ ' + e, false); });
+        });
+    });
+
     /* 6 — Full dump */
     document.getElementById('diag-dump').addEventListener('click', function () {
         diagRun('diag-dump', 'diag-dump-out', function (done) {

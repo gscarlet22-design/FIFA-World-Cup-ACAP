@@ -716,10 +716,31 @@ static int fd_parse_matches(const char *json,
         m->id=cJSON_IsNumber(iid)?(int)iid->valuedouble:0;
 
         cJSON *st=cJSON_GetObjectItem(item,"status");
-        fd_norm_status(cJSON_IsString(st)?st->valuestring:NULL, m->status);
+        const char *fdst=cJSON_IsString(st)?st->valuestring:NULL;
+        fd_norm_status(fdst, m->status);
 
+        /* minute: try top-level first, then currentPeriod.minute (FD v4 alt) */
         cJSON *min=cJSON_GetObjectItem(item,"minute");
-        m->elapsed=cJSON_IsNumber(min)?(int)min->valuedouble:0;
+        if (cJSON_IsNumber(min))
+            m->elapsed=(int)min->valuedouble;
+        else if (cJSON_IsString(min))
+            m->elapsed=atoi(min->valuestring);
+        else {
+            cJSON *cp=cJSON_GetObjectItem(item,"currentPeriod");
+            cJSON *cpm=cp?cJSON_GetObjectItem(cp,"minute"):NULL;
+            m->elapsed=cJSON_IsNumber(cpm)?(int)cpm->valuedouble:0;
+        }
+        cJSON *inj=cJSON_GetObjectItem(item,"injuryTime");
+        m->extra=(cJSON_IsNumber(inj)&&!cJSON_IsNull(inj))?(int)inj->valuedouble:0;
+
+        /* Distinguish 1H vs 2H: halfTime scores null → still first half */
+        if (fdst && !strcmp(fdst,"IN_PLAY")) {
+            cJSON *sc2=cJSON_GetObjectItem(item,"score");
+            cJSON *ht2=cJSON_GetObjectItem(sc2,"halfTime");
+            cJSON *hh =cJSON_GetObjectItem(ht2,"home");
+            int ht_done = cJSON_IsNumber(hh) && !cJSON_IsNull(hh);
+            strcpy(m->status, ht_done ? "2H" : "1H");
+        }
 
         cJSON *dt=cJSON_GetObjectItem(item,"utcDate");
         if (cJSON_IsString(dt)) strncpy(m->kickoff_iso,dt->valuestring,31);
@@ -2682,6 +2703,57 @@ static void handle_client(int fd) {
 
         char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
         send_json(fd, 200, js ? js : "{}"); free(js); return;
+    }
+
+    /* ── GET /diag_fd ── */
+    /* Fetches /competitions/WC/matches?status=IN_PLAY from football-data.org
+     * and returns the raw first match JSON so you can verify minute/status fields. */
+    if (!strcmp(method,"GET") && ROUTE("/diag_fd")) {
+        pthread_mutex_lock(&g_app.lock);
+        char fdk[64]; strncpy(fdk, g_app.fd_key, 63); fdk[63]='\0';
+        pthread_mutex_unlock(&g_app.lock);
+        if (!fdk[0]) { send_json(fd,400,"{\"error\":\"no fd_key configured\"}"); return; }
+
+        char url[256];
+        snprintf(url,sizeof(url),"%s/competitions/WC/matches?status=IN_PLAY",FD_BASE);
+        char *raw=NULL; long http_code=0;
+        CURL *c=curl_easy_init();
+        if (c) {
+            struct curl_slist *hdrs=NULL;
+            char auth[96]; snprintf(auth,sizeof(auth),"X-Auth-Token: %s",fdk);
+            hdrs=curl_slist_append(hdrs,auth);
+            hdrs=curl_slist_append(hdrs,"Accept: application/json");
+            size_t rsz=0;
+            curl_easy_setopt(c,CURLOPT_URL,url);
+            curl_easy_setopt(c,CURLOPT_HTTPHEADER,hdrs);
+            curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,curl_cb);
+            curl_easy_setopt(c,CURLOPT_WRITEDATA,&raw);
+            curl_easy_setopt(c,CURLOPT_TIMEOUT,10L);
+            (void)rsz;
+            curl_easy_perform(c);
+            curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&http_code);
+            curl_slist_free_all(hdrs); curl_easy_cleanup(c);
+        }
+        if (!raw) { send_json(fd,502,"{\"error\":\"curl failed\"}"); return; }
+
+        /* Wrap: return http_code + first match raw JSON only (keep response small) */
+        cJSON *root2=cJSON_Parse(raw); free(raw);
+        cJSON *out2=cJSON_CreateObject();
+        cJSON_AddNumberToObject(out2,"http_code",(double)http_code);
+        if (root2) {
+            cJSON *marr=cJSON_GetObjectItem(root2,"matches");
+            int nm2=cJSON_IsArray(marr)?cJSON_GetArraySize(marr):0;
+            cJSON_AddNumberToObject(out2,"match_count",(double)nm2);
+            if (nm2>0) {
+                cJSON *first=cJSON_Duplicate(cJSON_GetArrayItem(marr,0),1);
+                cJSON_AddItemToObject(out2,"first_match",first);
+            }
+            cJSON_Delete(root2);
+        } else {
+            cJSON_AddStringToObject(out2,"parse_error","invalid JSON from FD");
+        }
+        char *js2=cJSON_Print(out2); cJSON_Delete(out2);
+        send_json(fd,200,js2); free(js2); return;
     }
 
     LOG("404 method=%s path=%s",method,path);
