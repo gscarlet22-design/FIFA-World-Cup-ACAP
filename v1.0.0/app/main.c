@@ -2716,28 +2716,10 @@ static void handle_client(int fd) {
 
         char url[256];
         snprintf(url,sizeof(url),"%s/competitions/WC/matches?status=IN_PLAY",FD_BASE);
-        char *raw=NULL; long http_code=0;
-        CURL *c=curl_easy_init();
-        if (c) {
-            struct curl_slist *hdrs=NULL;
-            char auth[96]; snprintf(auth,sizeof(auth),"X-Auth-Token: %s",fdk);
-            hdrs=curl_slist_append(hdrs,auth);
-            hdrs=curl_slist_append(hdrs,"Accept: application/json");
-            size_t rsz=0;
-            curl_easy_setopt(c,CURLOPT_URL,url);
-            curl_easy_setopt(c,CURLOPT_HTTPHEADER,hdrs);
-            curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,curl_cb);
-            curl_easy_setopt(c,CURLOPT_WRITEDATA,&raw);
-            curl_easy_setopt(c,CURLOPT_TIMEOUT,10L);
-            (void)rsz;
-            curl_easy_perform(c);
-            curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&http_code);
-            curl_slist_free_all(hdrs); curl_easy_cleanup(c);
-        }
-        if (!raw) { send_json(fd,502,"{\"error\":\"curl failed\"}"); return; }
+        char raw[16384]; long http_code=0;
+        http_get(url,"X-Auth-Token",fdk,raw,sizeof(raw),&http_code);
 
-        /* Wrap: return http_code + first match raw JSON only (keep response small) */
-        cJSON *root2=cJSON_Parse(raw); free(raw);
+        cJSON *root2=cJSON_Parse(raw);
         cJSON *out2=cJSON_CreateObject();
         cJSON_AddNumberToObject(out2,"http_code",(double)http_code);
         if (root2) {
@@ -2751,6 +2733,7 @@ static void handle_client(int fd) {
             cJSON_Delete(root2);
         } else {
             cJSON_AddStringToObject(out2,"parse_error","invalid JSON from FD");
+            cJSON_AddStringToObject(out2,"raw_snippet",raw[0]?raw:"(empty)");
         }
         char *js2=cJSON_Print(out2); cJSON_Delete(out2);
         send_json(fd,200,js2); free(js2); return;
