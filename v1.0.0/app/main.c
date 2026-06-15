@@ -249,6 +249,22 @@ typedef struct {
     int  scroll_speed;
     int  duration_ms;
 
+    /* Display section toggles (1=show, 0=hide) and per-section dwell (ms, 0=global) */
+    int  sec_live_yours;     /* live scores — tracked teams          */
+    int  sec_ht_yours;       /* half-time scores — tracked teams     */
+    int  sec_ft_yours;       /* FT results — tracked teams           */
+    int  sec_live_all;       /* live scores — all other matches      */
+    int  sec_standings;      /* group standings                      */
+    int  sec_golden_boot;    /* golden boot top scorers              */
+    int  sec_upcoming;       /* upcoming / kickoff countdowns        */
+    int  dur_live_yours_ms;
+    int  dur_ht_ms;
+    int  dur_ft_ms;
+    int  dur_live_all_ms;
+    int  dur_standings_ms;
+    int  dur_golden_boot_ms;
+    int  dur_upcoming_ms;
+
     /* Live data — guarded by lock */
     NMatch    matches[MAX_MATCHES];
     int       nmatches;
@@ -900,9 +916,12 @@ static void rebuild_queue_locked(void) {
     char   msgs[MAX_DISP_MSG][MSG_SZ];
     int    durs[MAX_DISP_MSG];
     int    cnt=0;
-    int    dur = g_app.duration_ms>0 ? g_app.duration_ms : 15000;
+    int    gdur = g_app.duration_ms>0 ? g_app.duration_ms : 15000;
+#define SDUR(field) ((g_app.field > 0) ? g_app.field : gdur)
 
     /* ── Pass 0: live knockout matches for selected teams ── */
+    if (g_app.sec_live_yours) {
+    int d0=SDUR(dur_live_yours_ms);
     for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
         NMatch *m=&g_app.matches[i];
         if (!m->round[0]) continue; /* skip group stage */
@@ -918,14 +937,19 @@ static void rebuild_queue_locked(void) {
             "\xE2\x9A\xBD LIVE %s: %s%s %d\xE2\x80\x93%d %s%s | %s",
             m->round, hf,m->home_code, m->home_score,
             m->away_score, af,m->away_code, cl);
-        durs[cnt++]=dur;
+        durs[cnt++]=d0;
         if (m->last_event[0] && cnt<MAX_DISP_MSG) {
             strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
-            durs[cnt++]=dur/2;
+            durs[cnt++]=d0/2;
         }
     }
+    } /* sec_live_yours */
 
-    /* ── Pass 1: live matches for selected teams (highest priority) ── */
+    /* ── Pass 1: live/HT/FT matches for selected teams ── */
+    {
+    int dl=SDUR(dur_live_yours_ms);
+    int dh=SDUR(dur_ht_ms);
+    int df=SDUR(dur_ft_ms);
     for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
         NMatch *m=&g_app.matches[i];
         if (!is_selected(m->home_code) && !is_selected(m->away_code)) continue;
@@ -937,33 +961,36 @@ static void rebuild_queue_locked(void) {
         int ht   = !strcmp(m->status,"HT");
         int ft   = !strcmp(m->status,"FT");
 
-        if (live) {
+        if (live && g_app.sec_live_yours) {
             fmt_clock(m,cl,sizeof(cl));
             snprintf(msgs[cnt],MSG_SZ,
                 "\xE2\x9A\xBD LIVE: %s%s %d\xE2\x80\x93%d %s%s | %s | %s",
                 hf,m->home_code,m->home_score,
                 m->away_score,af,m->away_code,cl,m->group);
-            durs[cnt++]=dur;
+            durs[cnt++]=dl;
             if (m->last_event[0] && cnt<MAX_DISP_MSG) {
                 strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
-                durs[cnt++]=dur/2;
+                durs[cnt++]=dl/2;
             }
-        } else if (ht) {
+        } else if (ht && g_app.sec_ht_yours) {
             snprintf(msgs[cnt],MSG_SZ,
                 "HT: %s%s %d\xE2\x80\x93%d %s%s | %s",
                 hf,m->home_code,m->home_score,
                 m->away_score,af,m->away_code,m->group);
-            durs[cnt++]=dur;
-        } else if (ft) {
+            durs[cnt++]=dh;
+        } else if (ft && g_app.sec_ft_yours) {
             snprintf(msgs[cnt],MSG_SZ,
                 "FT: %s%s %d\xE2\x80\x93%d %s%s | %s",
                 hf,m->home_code,m->home_score,
                 m->away_score,af,m->away_code,m->group);
-            durs[cnt++]=dur;
+            durs[cnt++]=df;
         }
     }
+    } /* pass 1 */
 
     /* ── Pass 2: all other live matches ── */
+    if (g_app.sec_live_all) {
+    int d2=SDUR(dur_live_all_ms);
     for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
         NMatch *m=&g_app.matches[i];
         if (is_selected(m->home_code)||is_selected(m->away_code)) continue;
@@ -978,10 +1005,13 @@ static void rebuild_queue_locked(void) {
             "\xE2\x9A\xBD %s%s %d\xE2\x80\x93%d %s%s | %s %s",
             hf,m->home_code,m->home_score,
             m->away_score,af,m->away_code,cl,m->group);
-        durs[cnt++]=dur*2/3;
+        durs[cnt++]=d2*2/3;
     }
+    } /* sec_live_all */
 
     /* ── Pass 3: group standings for groups with selected teams ── */
+    if (g_app.sec_standings) {
+    int d3=SDUR(dur_standings_ms);
     for (int g=0; g<N_GROUPS && cnt<MAX_DISP_MSG; g++) {
         if (g_app.nst[g]<2) continue;
         /* Does this group contain a selected team? */
@@ -1005,11 +1035,13 @@ static void rebuild_queue_locked(void) {
             off+=snprintf(line+off,rem,"%d.%s%s %dpts ",t+1,f,s->code,s->pts);
         }
         strncpy(msgs[cnt],line,MSG_SZ-1);
-        durs[cnt++]=dur;
+        durs[cnt++]=d3;
     }
+    } /* sec_standings */
 
     /* ── Pass 4: Golden Boot top 3 ── */
-    if (g_app.nscorers>0 && cnt<MAX_DISP_MSG) {
+    if (g_app.sec_golden_boot && g_app.nscorers>0 && cnt<MAX_DISP_MSG) {
+        int d4=SDUR(dur_golden_boot_ms);
         char line[MSG_SZ];
         int off=snprintf(line,MSG_SZ,
             "\xF0\x9F\x8F\x86 Golden Boot: ");
@@ -1023,10 +1055,12 @@ static void rebuild_queue_locked(void) {
             off+=snprintf(line+off,rem,"%s%s(%s) %d  ",f,disp,sc->team_code,sc->goals);
         }
         strncpy(msgs[cnt],line,MSG_SZ-1);
-        durs[cnt++]=dur;
+        durs[cnt++]=d4;
     }
 
     /* ── Pass 5: kickoff countdowns for selected teams not playing ── */
+    if (g_app.sec_upcoming) {
+    int d5=SDUR(dur_upcoming_ms);
     for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
         NMatch *m=&g_app.matches[i];
         if (strcmp(m->status,"NS")!=0) continue;
@@ -1037,8 +1071,10 @@ static void rebuild_queue_locked(void) {
         snprintf(msgs[cnt],MSG_SZ,
             "\xE2\x8F\xB1 %s%s vs %s%s | KO in %s | %s",
             hf,m->home_code,af,m->away_code,cd,m->group);
-        durs[cnt++]=dur;
+        durs[cnt++]=d5;
     }
+    } /* sec_upcoming */
+#undef SDUR
 
     /* ── Fallback splash ── */
     if (cnt==0) {
@@ -2049,6 +2085,20 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(root,"text_size",g_app.text_size);
         cJSON_AddNumberToObject(root,"scroll_speed",g_app.scroll_speed);
         cJSON_AddNumberToObject(root,"duration_ms",g_app.duration_ms);
+        cJSON_AddBoolToObject(root,"sec_live_yours",  g_app.sec_live_yours);
+        cJSON_AddBoolToObject(root,"sec_ht_yours",    g_app.sec_ht_yours);
+        cJSON_AddBoolToObject(root,"sec_ft_yours",    g_app.sec_ft_yours);
+        cJSON_AddBoolToObject(root,"sec_live_all",    g_app.sec_live_all);
+        cJSON_AddBoolToObject(root,"sec_standings",   g_app.sec_standings);
+        cJSON_AddBoolToObject(root,"sec_golden_boot", g_app.sec_golden_boot);
+        cJSON_AddBoolToObject(root,"sec_upcoming",    g_app.sec_upcoming);
+        cJSON_AddNumberToObject(root,"dur_live_yours_ms",  (double)g_app.dur_live_yours_ms);
+        cJSON_AddNumberToObject(root,"dur_ht_ms",          (double)g_app.dur_ht_ms);
+        cJSON_AddNumberToObject(root,"dur_ft_ms",          (double)g_app.dur_ft_ms);
+        cJSON_AddNumberToObject(root,"dur_live_all_ms",    (double)g_app.dur_live_all_ms);
+        cJSON_AddNumberToObject(root,"dur_standings_ms",   (double)g_app.dur_standings_ms);
+        cJSON_AddNumberToObject(root,"dur_golden_boot_ms", (double)g_app.dur_golden_boot_ms);
+        cJSON_AddNumberToObject(root,"dur_upcoming_ms",    (double)g_app.dur_upcoming_ms);
         pthread_mutex_unlock(&g_app.lock);
         char *js=cJSON_PrintUnformatted(root); cJSON_Delete(root);
         send_json(fd,200,js); free(js); return;
@@ -2142,6 +2192,20 @@ static void handle_client(int fd) {
         NUM_FIELD("alert_clip_id",   g_app.alert_clip_id);
         if (g_app.audio_volume < 0)   g_app.audio_volume = 0;
         if (g_app.audio_volume > 100) g_app.audio_volume = 100;
+        BOOL_FIELD("sec_live_yours",  g_app.sec_live_yours);
+        BOOL_FIELD("sec_ht_yours",    g_app.sec_ht_yours);
+        BOOL_FIELD("sec_ft_yours",    g_app.sec_ft_yours);
+        BOOL_FIELD("sec_live_all",    g_app.sec_live_all);
+        BOOL_FIELD("sec_standings",   g_app.sec_standings);
+        BOOL_FIELD("sec_golden_boot", g_app.sec_golden_boot);
+        BOOL_FIELD("sec_upcoming",    g_app.sec_upcoming);
+        NUM_FIELD("dur_live_yours_ms",  g_app.dur_live_yours_ms);
+        NUM_FIELD("dur_ht_ms",          g_app.dur_ht_ms);
+        NUM_FIELD("dur_ft_ms",          g_app.dur_ft_ms);
+        NUM_FIELD("dur_live_all_ms",    g_app.dur_live_all_ms);
+        NUM_FIELD("dur_standings_ms",   g_app.dur_standings_ms);
+        NUM_FIELD("dur_golden_boot_ms", g_app.dur_golden_boot_ms);
+        NUM_FIELD("dur_upcoming_ms",    g_app.dur_upcoming_ms);
 #undef STR_FIELD
 #undef BOOL_FIELD
 #undef NUM_FIELD
@@ -2185,6 +2249,20 @@ static void handle_client(int fd) {
         cJSON_AddStringToObject(cfg,"text_size",    g_app.text_size);
         cJSON_AddNumberToObject(cfg,"scroll_speed", g_app.scroll_speed);
         cJSON_AddNumberToObject(cfg,"duration_ms",  g_app.duration_ms);
+        cJSON_AddBoolToObject(cfg,"sec_live_yours",  g_app.sec_live_yours);
+        cJSON_AddBoolToObject(cfg,"sec_ht_yours",    g_app.sec_ht_yours);
+        cJSON_AddBoolToObject(cfg,"sec_ft_yours",    g_app.sec_ft_yours);
+        cJSON_AddBoolToObject(cfg,"sec_live_all",    g_app.sec_live_all);
+        cJSON_AddBoolToObject(cfg,"sec_standings",   g_app.sec_standings);
+        cJSON_AddBoolToObject(cfg,"sec_golden_boot", g_app.sec_golden_boot);
+        cJSON_AddBoolToObject(cfg,"sec_upcoming",    g_app.sec_upcoming);
+        cJSON_AddNumberToObject(cfg,"dur_live_yours_ms",  (double)g_app.dur_live_yours_ms);
+        cJSON_AddNumberToObject(cfg,"dur_ht_ms",          (double)g_app.dur_ht_ms);
+        cJSON_AddNumberToObject(cfg,"dur_ft_ms",          (double)g_app.dur_ft_ms);
+        cJSON_AddNumberToObject(cfg,"dur_live_all_ms",    (double)g_app.dur_live_all_ms);
+        cJSON_AddNumberToObject(cfg,"dur_standings_ms",   (double)g_app.dur_standings_ms);
+        cJSON_AddNumberToObject(cfg,"dur_golden_boot_ms", (double)g_app.dur_golden_boot_ms);
+        cJSON_AddNumberToObject(cfg,"dur_upcoming_ms",    (double)g_app.dur_upcoming_ms);
         char *cs=cJSON_PrintUnformatted(cfg); cJSON_Delete(cfg);
         int save_ok=0;
         if(g_app.axp) {
@@ -2642,6 +2720,12 @@ static void load_config(void) {
     strcpy(g_app.poll_mode,"idle"); g_app.effective_poll_sec=300;
     g_app.webhook_enabled=0;
     g_app.strobe_enabled=1; g_app.strobe_flashes=5;
+    g_app.sec_live_yours=1; g_app.sec_ht_yours=1; g_app.sec_ft_yours=1;
+    g_app.sec_live_all=1; g_app.sec_standings=1; g_app.sec_golden_boot=1;
+    g_app.sec_upcoming=1;
+    g_app.dur_live_yours_ms=0; g_app.dur_ht_ms=0; g_app.dur_ft_ms=0;
+    g_app.dur_live_all_ms=0; g_app.dur_standings_ms=0;
+    g_app.dur_golden_boot_ms=0; g_app.dur_upcoming_ms=0;
 
     if (!g_app.axp) return;
     GError *err=NULL; gchar *val=NULL;
@@ -2707,6 +2791,20 @@ static void load_config(void) {
     LN("audio_volume",       g_app.audio_volume);
     LN("goal_clip_id",       g_app.goal_clip_id);
     LN("alert_clip_id",      g_app.alert_clip_id);
+    LB("sec_live_yours",     g_app.sec_live_yours);
+    LB("sec_ht_yours",       g_app.sec_ht_yours);
+    LB("sec_ft_yours",       g_app.sec_ft_yours);
+    LB("sec_live_all",       g_app.sec_live_all);
+    LB("sec_standings",      g_app.sec_standings);
+    LB("sec_golden_boot",    g_app.sec_golden_boot);
+    LB("sec_upcoming",       g_app.sec_upcoming);
+    LN("dur_live_yours_ms",  g_app.dur_live_yours_ms);
+    LN("dur_ht_ms",          g_app.dur_ht_ms);
+    LN("dur_ft_ms",          g_app.dur_ft_ms);
+    LN("dur_live_all_ms",    g_app.dur_live_all_ms);
+    LN("dur_standings_ms",   g_app.dur_standings_ms);
+    LN("dur_golden_boot_ms", g_app.dur_golden_boot_ms);
+    LN("dur_upcoming_ms",    g_app.dur_upcoming_ms);
 #undef LS
 #undef LB
 #undef LN

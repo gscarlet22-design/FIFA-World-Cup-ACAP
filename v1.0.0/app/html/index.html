@@ -132,6 +132,53 @@
 
         <hr class="divider">
 
+        <h3 class="section-title">Display Sections</h3>
+        <p class="hint">Choose which content appears on the speaker display and how long each message stays on screen. Leave dwell blank to use the global duration set below.</p>
+        <table class="section-table">
+            <thead>
+                <tr><th>Show</th><th>Section</th><th>Dwell (ms)</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><input type="checkbox" id="sec-live-yours" checked></td>
+                    <td>Live scores &mdash; your tracked teams</td>
+                    <td><input type="number" id="dur-live-yours-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" id="sec-ht-yours" checked></td>
+                    <td>Half-time scores &mdash; your tracked teams</td>
+                    <td><input type="number" id="dur-ht-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" id="sec-ft-yours" checked></td>
+                    <td>FT results &mdash; your tracked teams</td>
+                    <td><input type="number" id="dur-ft-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" id="sec-live-all" checked></td>
+                    <td>Live scores &mdash; all other matches</td>
+                    <td><input type="number" id="dur-live-all-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" id="sec-standings" checked></td>
+                    <td>Group standings</td>
+                    <td><input type="number" id="dur-standings-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" id="sec-golden-boot" checked></td>
+                    <td>Golden Boot top scorers</td>
+                    <td><input type="number" id="dur-golden-boot-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" id="sec-upcoming" checked></td>
+                    <td>Upcoming matches &amp; countdown</td>
+                    <td><input type="number" id="dur-upcoming-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <hr class="divider">
+
         <h3 class="section-title">Device Credentials</h3>
         <p class="hint">Used to push text to the C1720 / C1710 display.</p>
         <div class="form-group">
