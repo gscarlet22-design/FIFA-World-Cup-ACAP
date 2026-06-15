@@ -254,6 +254,7 @@ typedef struct {
     int  sec_ht_yours;       /* half-time scores — tracked teams     */
     int  sec_ft_yours;       /* FT results — tracked teams           */
     int  sec_live_all;       /* live scores — all other matches      */
+    int  sec_goal_events;    /* goal/red-card event text             */
     int  sec_standings;      /* group standings                      */
     int  sec_golden_boot;    /* golden boot top scorers              */
     int  sec_upcoming;       /* upcoming / kickoff countdowns        */
@@ -261,9 +262,11 @@ typedef struct {
     int  dur_ht_ms;
     int  dur_ft_ms;
     int  dur_live_all_ms;
+    int  dur_goal_events_ms; /* 0 = max(global, 10 000 ms floor)    */
     int  dur_standings_ms;
     int  dur_golden_boot_ms;
     int  dur_upcoming_ms;
+    int  alert_all_goals;    /* 1 = strobe/audio on all goals, 0 = tracked only */
 
     /* Live data — guarded by lock */
     NMatch    matches[MAX_MATCHES];
@@ -1027,8 +1030,30 @@ static void rebuild_queue_locked(void) {
             hf,m->home_code,m->home_score,
             m->away_score,af,m->away_code,cl,m->group);
         durs[cnt++]=d2*2/3;
+        if (m->last_event[0] && cnt<MAX_DISP_MSG) {
+            strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
+            msgs[cnt][MSG_SZ-1]='\0';
+            durs[cnt++]=d2*2/3;
+        }
     }
     } /* sec_live_all */
+
+    /* ── Pass 2b: goal/red-card events — all live matches, 10s floor ── */
+    if (g_app.sec_goal_events) {
+    int dge = g_app.dur_goal_events_ms > 0 ? g_app.dur_goal_events_ms
+                                            : (gdur > 10000 ? gdur : 10000);
+    for (int i=0; i<g_app.nmatches && cnt<MAX_DISP_MSG; i++) {
+        NMatch *m=&g_app.matches[i];
+        if (!m->last_event[0]) continue;
+        int live=!strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
+                 !strcmp(m->status,"ET")||!strcmp(m->status,"PEN")||
+                 !strcmp(m->status,"HT");
+        if (!live) continue;
+        strncpy(msgs[cnt],m->last_event,MSG_SZ-1);
+        msgs[cnt][MSG_SZ-1]='\0';
+        durs[cnt++]=dge;
+    }
+    } /* sec_goal_events */
 
     /* ── Pass 3: group standings for groups with selected teams ── */
     if (g_app.sec_standings) {
@@ -1691,8 +1716,9 @@ static void do_fetch(void) {
     int str_enabled  = g_app.strobe_enabled;
     NMatch goal_match; memset(&goal_match, 0, sizeof(goal_match));
     for (int i = 0; i < nm; i++) {
-        /* Only tracked teams trigger events */
-        if (!is_selected(tm[i].home_code) && !is_selected(tm[i].away_code))
+        /* Only tracked teams trigger events (unless alert_all_goals is set) */
+        if (!g_app.alert_all_goals &&
+            !is_selected(tm[i].home_code) && !is_selected(tm[i].away_code))
             continue;
         /* Only during live play */
         if (strcmp(tm[i].status,"1H")!=0 && strcmp(tm[i].status,"2H")!=0 &&
@@ -2110,13 +2136,16 @@ static void handle_client(int fd) {
         cJSON_AddBoolToObject(root,"sec_ht_yours",    g_app.sec_ht_yours);
         cJSON_AddBoolToObject(root,"sec_ft_yours",    g_app.sec_ft_yours);
         cJSON_AddBoolToObject(root,"sec_live_all",    g_app.sec_live_all);
+        cJSON_AddBoolToObject(root,"sec_goal_events", g_app.sec_goal_events);
         cJSON_AddBoolToObject(root,"sec_standings",   g_app.sec_standings);
         cJSON_AddBoolToObject(root,"sec_golden_boot", g_app.sec_golden_boot);
         cJSON_AddBoolToObject(root,"sec_upcoming",    g_app.sec_upcoming);
+        cJSON_AddBoolToObject(root,"alert_all_goals", g_app.alert_all_goals);
         cJSON_AddNumberToObject(root,"dur_live_yours_ms",  (double)g_app.dur_live_yours_ms);
         cJSON_AddNumberToObject(root,"dur_ht_ms",          (double)g_app.dur_ht_ms);
         cJSON_AddNumberToObject(root,"dur_ft_ms",          (double)g_app.dur_ft_ms);
         cJSON_AddNumberToObject(root,"dur_live_all_ms",    (double)g_app.dur_live_all_ms);
+        cJSON_AddNumberToObject(root,"dur_goal_events_ms", (double)g_app.dur_goal_events_ms);
         cJSON_AddNumberToObject(root,"dur_standings_ms",   (double)g_app.dur_standings_ms);
         cJSON_AddNumberToObject(root,"dur_golden_boot_ms", (double)g_app.dur_golden_boot_ms);
         cJSON_AddNumberToObject(root,"dur_upcoming_ms",    (double)g_app.dur_upcoming_ms);
@@ -2217,13 +2246,16 @@ static void handle_client(int fd) {
         BOOL_FIELD("sec_ht_yours",    g_app.sec_ht_yours);
         BOOL_FIELD("sec_ft_yours",    g_app.sec_ft_yours);
         BOOL_FIELD("sec_live_all",    g_app.sec_live_all);
+        BOOL_FIELD("sec_goal_events", g_app.sec_goal_events);
         BOOL_FIELD("sec_standings",   g_app.sec_standings);
         BOOL_FIELD("sec_golden_boot", g_app.sec_golden_boot);
         BOOL_FIELD("sec_upcoming",    g_app.sec_upcoming);
+        BOOL_FIELD("alert_all_goals", g_app.alert_all_goals);
         NUM_FIELD("dur_live_yours_ms",  g_app.dur_live_yours_ms);
         NUM_FIELD("dur_ht_ms",          g_app.dur_ht_ms);
         NUM_FIELD("dur_ft_ms",          g_app.dur_ft_ms);
         NUM_FIELD("dur_live_all_ms",    g_app.dur_live_all_ms);
+        NUM_FIELD("dur_goal_events_ms", g_app.dur_goal_events_ms);
         NUM_FIELD("dur_standings_ms",   g_app.dur_standings_ms);
         NUM_FIELD("dur_golden_boot_ms", g_app.dur_golden_boot_ms);
         NUM_FIELD("dur_upcoming_ms",    g_app.dur_upcoming_ms);
@@ -2274,13 +2306,16 @@ static void handle_client(int fd) {
         cJSON_AddBoolToObject(cfg,"sec_ht_yours",    g_app.sec_ht_yours);
         cJSON_AddBoolToObject(cfg,"sec_ft_yours",    g_app.sec_ft_yours);
         cJSON_AddBoolToObject(cfg,"sec_live_all",    g_app.sec_live_all);
+        cJSON_AddBoolToObject(cfg,"sec_goal_events", g_app.sec_goal_events);
         cJSON_AddBoolToObject(cfg,"sec_standings",   g_app.sec_standings);
         cJSON_AddBoolToObject(cfg,"sec_golden_boot", g_app.sec_golden_boot);
         cJSON_AddBoolToObject(cfg,"sec_upcoming",    g_app.sec_upcoming);
+        cJSON_AddBoolToObject(cfg,"alert_all_goals", g_app.alert_all_goals);
         cJSON_AddNumberToObject(cfg,"dur_live_yours_ms",  (double)g_app.dur_live_yours_ms);
         cJSON_AddNumberToObject(cfg,"dur_ht_ms",          (double)g_app.dur_ht_ms);
         cJSON_AddNumberToObject(cfg,"dur_ft_ms",          (double)g_app.dur_ft_ms);
         cJSON_AddNumberToObject(cfg,"dur_live_all_ms",    (double)g_app.dur_live_all_ms);
+        cJSON_AddNumberToObject(cfg,"dur_goal_events_ms", (double)g_app.dur_goal_events_ms);
         cJSON_AddNumberToObject(cfg,"dur_standings_ms",   (double)g_app.dur_standings_ms);
         cJSON_AddNumberToObject(cfg,"dur_golden_boot_ms", (double)g_app.dur_golden_boot_ms);
         cJSON_AddNumberToObject(cfg,"dur_upcoming_ms",    (double)g_app.dur_upcoming_ms);
@@ -2776,11 +2811,12 @@ static void load_config(void) {
     g_app.webhook_enabled=0;
     g_app.strobe_enabled=1; g_app.strobe_flashes=5;
     g_app.sec_live_yours=1; g_app.sec_ht_yours=1; g_app.sec_ft_yours=1;
-    g_app.sec_live_all=1; g_app.sec_standings=1; g_app.sec_golden_boot=1;
-    g_app.sec_upcoming=1;
+    g_app.sec_live_all=1; g_app.sec_goal_events=1; g_app.sec_standings=1;
+    g_app.sec_golden_boot=1; g_app.sec_upcoming=1;
     g_app.dur_live_yours_ms=0; g_app.dur_ht_ms=0; g_app.dur_ft_ms=0;
-    g_app.dur_live_all_ms=0; g_app.dur_standings_ms=0;
-    g_app.dur_golden_boot_ms=0; g_app.dur_upcoming_ms=0;
+    g_app.dur_live_all_ms=0; g_app.dur_goal_events_ms=0;
+    g_app.dur_standings_ms=0; g_app.dur_golden_boot_ms=0; g_app.dur_upcoming_ms=0;
+    g_app.alert_all_goals=1;
 
     if (!g_app.axp) return;
     GError *err=NULL; gchar *val=NULL;
@@ -2850,13 +2886,16 @@ static void load_config(void) {
     LB("sec_ht_yours",       g_app.sec_ht_yours);
     LB("sec_ft_yours",       g_app.sec_ft_yours);
     LB("sec_live_all",       g_app.sec_live_all);
+    LB("sec_goal_events",    g_app.sec_goal_events);
     LB("sec_standings",      g_app.sec_standings);
     LB("sec_golden_boot",    g_app.sec_golden_boot);
     LB("sec_upcoming",       g_app.sec_upcoming);
+    LB("alert_all_goals",    g_app.alert_all_goals);
     LN("dur_live_yours_ms",  g_app.dur_live_yours_ms);
     LN("dur_ht_ms",          g_app.dur_ht_ms);
     LN("dur_ft_ms",          g_app.dur_ft_ms);
     LN("dur_live_all_ms",    g_app.dur_live_all_ms);
+    LN("dur_goal_events_ms", g_app.dur_goal_events_ms);
     LN("dur_standings_ms",   g_app.dur_standings_ms);
     LN("dur_golden_boot_ms", g_app.dur_golden_boot_ms);
     LN("dur_upcoming_ms",    g_app.dur_upcoming_ms);

@@ -503,9 +503,11 @@
             document.getElementById('sec-ht-yours').checked    = d.sec_ht_yours    !== false;
             document.getElementById('sec-ft-yours').checked    = d.sec_ft_yours    !== false;
             document.getElementById('sec-live-all').checked    = d.sec_live_all    !== false;
+            document.getElementById('sec-goal-events').checked = d.sec_goal_events !== false;
             document.getElementById('sec-standings').checked   = d.sec_standings   !== false;
             document.getElementById('sec-golden-boot').checked = d.sec_golden_boot !== false;
             document.getElementById('sec-upcoming').checked    = d.sec_upcoming    !== false;
+            document.getElementById('alert-all-goals').checked = d.alert_all_goals !== false;
             var setDur = function (id, v) {
                 document.getElementById(id).value = (v && v > 0) ? String(v) : '';
             };
@@ -513,6 +515,7 @@
             setDur('dur-ht-ms',          d.dur_ht_ms);
             setDur('dur-ft-ms',          d.dur_ft_ms);
             setDur('dur-live-all-ms',    d.dur_live_all_ms);
+            setDur('dur-goal-events-ms', d.dur_goal_events_ms);
             setDur('dur-standings-ms',   d.dur_standings_ms);
             setDur('dur-golden-boot-ms', d.dur_golden_boot_ms);
             setDur('dur-upcoming-ms',    d.dur_upcoming_ms);
@@ -555,13 +558,16 @@
             sec_ht_yours:      document.getElementById('sec-ht-yours').checked,
             sec_ft_yours:      document.getElementById('sec-ft-yours').checked,
             sec_live_all:      document.getElementById('sec-live-all').checked,
+            sec_goal_events:   document.getElementById('sec-goal-events').checked,
             sec_standings:     document.getElementById('sec-standings').checked,
             sec_golden_boot:   document.getElementById('sec-golden-boot').checked,
             sec_upcoming:      document.getElementById('sec-upcoming').checked,
+            alert_all_goals:   document.getElementById('alert-all-goals').checked,
             dur_live_yours_ms: parseInt(document.getElementById('dur-live-yours-ms').value, 10) || 0,
             dur_ht_ms:         parseInt(document.getElementById('dur-ht-ms').value, 10) || 0,
             dur_ft_ms:         parseInt(document.getElementById('dur-ft-ms').value, 10) || 0,
             dur_live_all_ms:   parseInt(document.getElementById('dur-live-all-ms').value, 10) || 0,
+            dur_goal_events_ms: parseInt(document.getElementById('dur-goal-events-ms').value, 10) || 0,
             dur_standings_ms:  parseInt(document.getElementById('dur-standings-ms').value, 10) || 0,
             dur_golden_boot_ms: parseInt(document.getElementById('dur-golden-boot-ms').value, 10) || 0,
             dur_upcoming_ms:   parseInt(document.getElementById('dur-upcoming-ms').value, 10) || 0,

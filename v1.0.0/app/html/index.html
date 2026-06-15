@@ -160,6 +160,11 @@
                     <td><input type="number" id="dur-live-all-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
                 </tr>
                 <tr>
+                    <td><input type="checkbox" id="sec-goal-events" checked></td>
+                    <td>Goal &amp; red card events &mdash; all live matches <span class="hint" style="display:inline">(min 10 s)</span></td>
+                    <td><input type="number" id="dur-goal-events-ms" class="dur-input" min="0" step="1000" placeholder="10000"></td>
+                </tr>
+                <tr>
                     <td><input type="checkbox" id="sec-standings" checked></td>
                     <td>Group standings</td>
                     <td><input type="number" id="dur-standings-ms" class="dur-input" min="0" step="1000" placeholder="global"></td>
@@ -286,9 +291,13 @@
 
         <h3 class="section-title">&#127937; Goal Strobe</h3>
         <p class="hint">
-            When a tracked team scores, the display flashes in the team's kit colors.
-            Audio plays in parallel. Each flash alternates the primary kit and inverted colors.
+            When a goal is detected, the display flashes in the team's kit colors and audio plays.
+            Each flash alternates the primary kit and inverted colors.
         </p>
+        <div class="form-group toggle-row">
+            <label>Alert on ALL goals <span class="hint-inline">(not just tracked teams)</span></label>
+            <label class="toggle"><input type="checkbox" id="alert-all-goals" checked><span class="slider"></span></label>
+        </div>
         <div class="form-group toggle-row">
             <label>Strobe Enabled</label>
             <label class="toggle"><input type="checkbox" id="strobe-enabled" checked><span class="slider"></span></label>
