@@ -798,6 +798,55 @@
         });
     });
 
+    /* 7 — API-Football connectivity */
+    document.getElementById('diag-api').addEventListener('click', function () {
+        diagRun('diag-api', 'diag-api-out', function (done) {
+            api('/diag_api')
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    var lines = [];
+                    lines.push('Keys configured:  AF=' + (d.af_key_set ? '✓ set' : '✗ NOT SET')
+                        + '   FD=' + (d.fd_key_set ? '✓ set' : '✗ NOT SET'));
+                    if (d.demo_mode) lines.push('⚠ Demo Mode is ON — live API calls are bypassed');
+
+                    if (!d.af_key_set) {
+                        lines.push('\nNo api-football key saved. Go to Config → API Keys and paste your key, then Save.');
+                        return done(lines.join('\n'), false);
+                    }
+
+                    lines.push('');
+                    lines.push('── api-football /status (key + quota) ──');
+                    lines.push('HTTP ' + (d.af_status_http || '?') + '  key valid: ' + (d.af_key_valid ? '✓' : '✗'));
+                    if (d.af_plan)         lines.push('Plan: ' + d.af_plan);
+                    if (d.af_req_today != null)
+                        lines.push('Requests today: ' + d.af_req_today + ' / ' + (d.af_req_limit || '?'));
+                    if (d.af_active != null) lines.push('Subscription active: ' + d.af_active);
+
+                    lines.push('');
+                    lines.push('── WC 2026 fixtures (league 1) ──');
+                    lines.push('HTTP ' + (d.af_fixtures_http || '?'));
+                    if (d.af_fixtures_error) {
+                        lines.push('✗ API returned an error (rate limit or auth issue)');
+                    } else if (d.af_fixtures_count != null) {
+                        lines.push('Fixtures returned: ' + d.af_fixtures_count);
+                        if (d.af_fixtures_count > 0) {
+                            lines.push('✓ WC 2026 data is accessible');
+                        }
+                    }
+                    if (d.af_fixtures_hint) {
+                        lines.push('');
+                        lines.push('⚠ ' + d.af_fixtures_hint);
+                        lines.push('   Fix: api-football.com → My Account → API Leagues');
+                        lines.push('        Search "FIFA World Cup" → click Subscribe');
+                    }
+
+                    var ok = d.af_key_valid && !d.af_fixtures_error && d.af_fixtures_count > 0;
+                    done(lines.join('\n'), ok);
+                })
+                .catch(function (e) { done('✗ ' + e, false); });
+        });
+    });
+
     /* 6 — Full dump */
     document.getElementById('diag-dump').addEventListener('click', function () {
         diagRun('diag-dump', 'diag-dump-out', function (done) {

@@ -2529,6 +2529,76 @@ static void handle_client(int fd) {
         send_json(fd, 200, "{\"ok\":true}"); return;
     }
 
+    /* ── GET /diag_api ── */
+    /* Tests api-football key validity, quota, and WC 2026 league access.
+     * Calls /status (account info) then /fixtures?league=1&season=2026&next=1
+     * so the Diag tab can tell the user exactly what's wrong without syslog. */
+    if (!strcmp(method,"GET") && ROUTE("/diag_api")) {
+        pthread_mutex_lock(&g_app.lock);
+        char af_key[64]; strncpy(af_key, g_app.af_key, 63); af_key[63]='\0';
+        char fd_key[64]; strncpy(fd_key, g_app.fd_key, 63); fd_key[63]='\0';
+        int demo = g_app.demo_mode;
+        pthread_mutex_unlock(&g_app.lock);
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "demo_mode",  demo);
+        cJSON_AddBoolToObject(root, "af_key_set", af_key[0] != '\0');
+        cJSON_AddBoolToObject(root, "fd_key_set", fd_key[0] != '\0');
+
+        if (af_key[0]) {
+            /* ── Account/quota check ── */
+            char sbuf[8192]; long scode = 0;
+            int sr = http_get(AF_BASE "/status", "X-RapidAPI-Key", af_key,
+                              sbuf, sizeof(sbuf), &scode);
+            cJSON_AddNumberToObject(root, "af_status_http", (double)scode);
+            if (sr == 0) {
+                cJSON *j = cJSON_Parse(sbuf);
+                cJSON *resp = j ? cJSON_GetObjectItem(j,"response") : NULL;
+                if (cJSON_IsObject(resp)) {
+                    cJSON *req = cJSON_GetObjectItem(resp,"requests");
+                    cJSON *sub = cJSON_GetObjectItem(resp,"subscription");
+                    cJSON *cur = cJSON_GetObjectItem(req,"current");
+                    cJSON *lim = cJSON_GetObjectItem(req,"limit_day");
+                    cJSON *pln = cJSON_GetObjectItem(sub,"plan");
+                    cJSON *act = cJSON_GetObjectItem(sub,"active");
+                    if (cJSON_IsNumber(cur)) cJSON_AddNumberToObject(root,"af_req_today",(double)cur->valuedouble);
+                    if (cJSON_IsNumber(lim)) cJSON_AddNumberToObject(root,"af_req_limit",(double)lim->valuedouble);
+                    if (cJSON_IsString(pln)) cJSON_AddStringToObject(root,"af_plan",pln->valuestring);
+                    if (cJSON_IsBool(act))   cJSON_AddBoolToObject  (root,"af_active",cJSON_IsTrue(act));
+                }
+                if (j) cJSON_Delete(j);
+                cJSON_AddBoolToObject(root,"af_key_valid", scode==200);
+            } else {
+                cJSON_AddBoolToObject(root,"af_key_valid", 0);
+            }
+
+            /* ── WC 2026 league access check ── */
+            char fbuf[8192]; long fcode = 0;
+            int fr = http_get(AF_BASE "/fixtures?league=1&season=2026&next=1",
+                              "X-RapidAPI-Key", af_key, fbuf, sizeof(fbuf), &fcode);
+            cJSON_AddNumberToObject(root,"af_fixtures_http",(double)fcode);
+            if (fr == 0) {
+                cJSON *j2 = cJSON_Parse(fbuf);
+                cJSON *resp2 = j2 ? cJSON_GetObjectItem(j2,"response") : NULL;
+                cJSON *errs2 = j2 ? cJSON_GetObjectItem(j2,"errors")   : NULL;
+                cJSON *res2  = j2 ? cJSON_GetObjectItem(j2,"results")  : NULL;
+                int cnt  = cJSON_IsNumber(res2) ? (int)res2->valuedouble : -1;
+                int herr = (cJSON_IsArray(errs2) && cJSON_GetArraySize(errs2)>0)
+                        || (cJSON_IsObject(errs2) && (cJSON_GetObjectItem(errs2,"rateLimit")||
+                                                      cJSON_GetObjectItem(errs2,"requests")));
+                cJSON_AddNumberToObject(root,"af_fixtures_count",(double)cnt);
+                cJSON_AddBoolToObject  (root,"af_fixtures_error", herr);
+                if (!herr && cnt == 0)
+                    cJSON_AddStringToObject(root,"af_fixtures_hint",
+                        "Empty response — subscribe to FIFA World Cup (league 1) on your api-football dashboard under API Leagues");
+                if (j2) cJSON_Delete(j2);
+            }
+        }
+
+        char *js = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+        send_json(fd, 200, js ? js : "{}"); free(js); return;
+    }
+
     LOG("404 method=%s path=%s",method,path);
     send_json(fd,404,"{\"message\":\"Not found\"}");
 }
