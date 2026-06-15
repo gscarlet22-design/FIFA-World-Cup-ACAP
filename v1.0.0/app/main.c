@@ -835,6 +835,9 @@ static int fd_parse_matches(const char *json,
                 snprintf(m->last_event,127,"%s %d+%d' %s (%s)",pfx,gm,gadd_,sn,tc);
             else
                 snprintf(m->last_event,127,"%s %d' %s (%s)",pfx,gm,sn,tc);
+            /* Last goal minute is a hard lower bound on elapsed — apply now,
+               before the kickoff estimate, so the estimate only raises it */
+            if (gm > m->elapsed) m->elapsed = gm;
         }
     }
     cJSON_Delete(root); return 0;
@@ -1706,6 +1709,48 @@ static void *display_thread(void *arg) {
     return NULL;
 }
 
+/* ── Patch live match minutes from FD individual match endpoint ── */
+/* Called after fd_parse_matches() on the local tm[] array (no lock held).
+   GET /matches/{id} returns minute + injuryTime for IN_PLAY matches.
+   Only fires when FD is the active source and there are live matches.
+   Rate: 1 call per live match per poll cycle (stays within free-tier 10 req/min). */
+static void fd_patch_live_minutes(NMatch *matches, int nm) {
+    pthread_mutex_lock(&g_app.lock);
+    char fdk[128]; strncpy(fdk, g_app.fd_key, 127); fdk[127]='\0';
+    pthread_mutex_unlock(&g_app.lock);
+    if (!fdk[0]) return;
+
+    char detail[8192];
+    for (int i = 0; i < nm; i++) {
+        NMatch *m = &matches[i];
+        if (!m->id) continue;
+        int live = !strcmp(m->status,"1H")||!strcmp(m->status,"2H")||
+                   !strcmp(m->status,"ET")||!strcmp(m->status,"PEN");
+        if (!live) continue;
+
+        char url[128];
+        snprintf(url, sizeof(url), "%s/matches/%d", FD_BASE, m->id);
+        long code = 0;
+        memset(detail, 0, sizeof(detail));
+        http_get(url, "X-Auth-Token", fdk, detail, sizeof(detail), &code);
+        if (code != 200 || !detail[0]) continue;
+
+        cJSON *root = cJSON_Parse(detail);
+        if (!root) continue;
+
+        cJSON *min = cJSON_GetObjectItem(root, "minute");
+        if (cJSON_IsNumber(min) && !cJSON_IsNull(min)) {
+            int api_min = (int)min->valuedouble;
+            if (api_min > 0) m->elapsed = api_min;
+        }
+        cJSON *inj = cJSON_GetObjectItem(root, "injuryTime");
+        if (cJSON_IsNumber(inj) && !cJSON_IsNull(inj))
+            m->extra = (int)inj->valuedouble;
+
+        cJSON_Delete(root);
+    }
+}
+
 /* ── Data fetch cycle ─────────────────────────────────────────── */
 static void do_fetch(void) {
     char *jbuf=malloc(JBUF); if(!jbuf) return;
@@ -1718,7 +1763,8 @@ static void do_fetch(void) {
                  "fixtures_live.json", jbuf, JBUF);
     NMatch tm[MAX_MATCHES]; int nm=0;
     if (src==SRC_AF||src==SRC_MOCK) af_parse_fixtures(jbuf,tm,MAX_MATCHES,&nm);
-    else if (src==SRC_FD)           fd_parse_matches(jbuf,tm,MAX_MATCHES,&nm);
+    else if (src==SRC_FD)         { fd_parse_matches(jbuf,tm,MAX_MATCHES,&nm);
+                                    fd_patch_live_minutes(tm,nm); }
     LOG("fixtures: %d matches, src=%d",nm,(int)src);
 
     /* Standings */
